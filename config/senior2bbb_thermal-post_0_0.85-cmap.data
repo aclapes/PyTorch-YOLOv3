@@ -1,0 +1,8 @@
+classes=1
+train=/data/senior2bbb_data_yolov3/train/pt/thermal-10000_post/list-0.85.txt
+valid=/data/senior2bbb_data_yolov3/valid/pt/thermal-10000_post/list-0.85.txt
+names=/data/senior2bbb_data_yolov3/classes.names
+backup=backup/
+eval=coco
+normalization=minmax:24815,50315
+color_map=1

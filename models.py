@@ -43,7 +43,8 @@ def create_modules(module_defs):
                 modules.add_module(f"batch_norm_{module_i}", nn.BatchNorm2d(filters, momentum=0.9, eps=1e-5))
             if module_def["activation"] == "leaky":
                 modules.add_module(f"leaky_{module_i}", nn.LeakyReLU(0.1))
-
+        elif module_def["type"] == "dropout":
+            modules.add_module(f"dropout_{module_i}", nn.Dropout(float(module_def["prob"])))
         elif module_def["type"] == "maxpool":
             kernel_size = int(module_def["size"])
             stride = int(module_def["stride"])
@@ -111,7 +112,7 @@ class YOLOLayer(nn.Module):
         self.anchors = anchors
         self.num_anchors = len(anchors)
         self.num_classes = num_classes
-        self.ignore_thres = 0.5
+        self.ignore_thres = 0.2
         self.mse_loss = nn.MSELoss()
         self.bce_loss = nn.BCELoss()
         self.obj_scale = 1
@@ -177,58 +178,58 @@ class YOLOLayer(nn.Module):
             -1,
         )
 
-        if targets is None:
-            return output, 0
-        else:
-            iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf = build_targets(
-                pred_boxes=pred_boxes,
-                pred_cls=pred_cls,
-                target=targets,
-                anchors=self.scaled_anchors,
-                ignore_thres=self.ignore_thres,
-            )
+        # if targets is None:
+        #     return output, 0
+        # else:
+        iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf = build_targets(
+            pred_boxes=pred_boxes,
+            pred_cls=pred_cls,
+            target=targets,
+            anchors=self.scaled_anchors,
+            ignore_thres=self.ignore_thres,
+        )
 
-            # Loss : Mask outputs to ignore non-existing objects (except with conf. loss)
-            loss_x = self.mse_loss(x[obj_mask], tx[obj_mask])
-            loss_y = self.mse_loss(y[obj_mask], ty[obj_mask])
-            loss_w = self.mse_loss(w[obj_mask], tw[obj_mask])
-            loss_h = self.mse_loss(h[obj_mask], th[obj_mask])
-            loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask])
-            loss_conf_noobj = self.bce_loss(pred_conf[noobj_mask], tconf[noobj_mask])
-            loss_conf = self.obj_scale * loss_conf_obj + self.noobj_scale * loss_conf_noobj
-            loss_cls = self.bce_loss(pred_cls[obj_mask], tcls[obj_mask])
-            total_loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
+        # Loss : Mask outputs to ignore non-existing objects (except with conf. loss)
+        loss_x = self.mse_loss(x[obj_mask], tx[obj_mask])
+        loss_y = self.mse_loss(y[obj_mask], ty[obj_mask])
+        loss_w = self.mse_loss(w[obj_mask], tw[obj_mask])
+        loss_h = self.mse_loss(h[obj_mask], th[obj_mask])
+        loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask])
+        loss_conf_noobj = self.bce_loss(pred_conf[noobj_mask], tconf[noobj_mask])
+        loss_conf = self.obj_scale * loss_conf_obj + self.noobj_scale * loss_conf_noobj
+        loss_cls = self.bce_loss(pred_cls[obj_mask], tcls[obj_mask])
+        total_loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
 
-            # Metrics
-            cls_acc = 100 * class_mask[obj_mask].mean()
-            conf_obj = pred_conf[obj_mask].mean()
-            conf_noobj = pred_conf[noobj_mask].mean()
-            conf50 = (pred_conf > 0.5).float()
-            iou50 = (iou_scores > 0.5).float()
-            iou75 = (iou_scores > 0.75).float()
-            detected_mask = conf50 * class_mask * tconf
-            precision = torch.sum(iou50 * detected_mask) / (conf50.sum() + 1e-16)
-            recall50 = torch.sum(iou50 * detected_mask) / (obj_mask.sum() + 1e-16)
-            recall75 = torch.sum(iou75 * detected_mask) / (obj_mask.sum() + 1e-16)
+        # Metrics
+        cls_acc = 100 * class_mask[obj_mask].mean()
+        conf_obj = pred_conf[obj_mask].mean()
+        conf_noobj = pred_conf[noobj_mask].mean()
+        conf50 = (pred_conf > 0.5).float()
+        iou50 = (iou_scores > 0.5).float()
+        iou75 = (iou_scores > 0.75).float()
+        detected_mask = conf50 * class_mask * tconf
+        precision = torch.sum(iou50 * detected_mask) / (conf50.sum() + 1e-16)
+        recall50 = torch.sum(iou50 * detected_mask) / (obj_mask.sum() + 1e-16)
+        recall75 = torch.sum(iou75 * detected_mask) / (obj_mask.sum() + 1e-16)
 
-            self.metrics = {
-                "loss": to_cpu(total_loss).item(),
-                "x": to_cpu(loss_x).item(),
-                "y": to_cpu(loss_y).item(),
-                "w": to_cpu(loss_w).item(),
-                "h": to_cpu(loss_h).item(),
-                "conf": to_cpu(loss_conf).item(),
-                "cls": to_cpu(loss_cls).item(),
-                "cls_acc": to_cpu(cls_acc).item(),
-                "recall50": to_cpu(recall50).item(),
-                "recall75": to_cpu(recall75).item(),
-                "precision": to_cpu(precision).item(),
-                "conf_obj": to_cpu(conf_obj).item(),
-                "conf_noobj": to_cpu(conf_noobj).item(),
-                "grid_size": grid_size,
-            }
+        self.metrics = {
+            "loss": to_cpu(total_loss).item(),
+            "x": to_cpu(loss_x).item(),
+            "y": to_cpu(loss_y).item(),
+            "w": to_cpu(loss_w).item(),
+            "h": to_cpu(loss_h).item(),
+            "conf": to_cpu(loss_conf).item(),
+            "cls": to_cpu(loss_cls).item(),
+            "cls_acc": to_cpu(cls_acc).item(),
+            "recall50": to_cpu(recall50).item(),
+            "recall75": to_cpu(recall75).item(),
+            "precision": to_cpu(precision).item(),
+            "conf_obj": to_cpu(conf_obj).item(),
+            "conf_noobj": to_cpu(conf_noobj).item(),
+            "grid_size": grid_size,
+        }
 
-            return output, total_loss
+        return output, total_loss
 
 
 class Darknet(nn.Module):
@@ -248,7 +249,7 @@ class Darknet(nn.Module):
         loss = 0
         layer_outputs, yolo_outputs = [], []
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
-            if module_def["type"] in ["convolutional", "upsample", "maxpool"]:
+            if module_def["type"] in ["convolutional", "upsample", "maxpool", "dropout"]:
                 x = module(x)
             elif module_def["type"] == "route":
                 x = torch.cat([layer_outputs[int(layer_i)] for layer_i in module_def["layers"].split(",")], 1)
@@ -261,7 +262,8 @@ class Darknet(nn.Module):
                 yolo_outputs.append(x)
             layer_outputs.append(x)
         yolo_outputs = to_cpu(torch.cat(yolo_outputs, 1))
-        return yolo_outputs if targets is None else (loss, yolo_outputs)
+        # return yolo_outputs if targets is None else (loss, yolo_outputs)
+        return loss, yolo_outputs
 
     def load_darknet_weights(self, weights_path):
         """Parses and loads the weights stored in 'weights_path'"""
@@ -276,14 +278,18 @@ class Darknet(nn.Module):
         # Establish cutoff for loading backbone weights
         cutoff = None
         if "darknet53.conv.74" in weights_path:
-            cutoff = 75
+            cutoff = 75  # TODO: adjust number to layers that need initialization, not all of them
+        elif 'yolov3-tiny.conv.15' in weights_path:
+            cutoff = 9
 
+        c = 0
         ptr = 0
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
-            if i == cutoff:
+            if c == cutoff:
                 break
             if module_def["type"] == "convolutional":
                 conv_layer = module[0]
+                c += 1
                 if module_def["batch_normalize"]:
                     # Load BN bias, weights, running mean and running variance
                     bn_layer = module[1]

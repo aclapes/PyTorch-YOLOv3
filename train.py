@@ -14,6 +14,7 @@ import sys
 import time
 import datetime
 import argparse
+from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
@@ -21,21 +22,33 @@ from torchvision import datasets
 from torchvision import transforms
 from torch.autograd import Variable
 import torch.optim as optim
+import torch.optim.lr_scheduler as lr_scheduler
+
+
+hyp = {'lr0': 0.001,  # initial learning rate
+       'lrf': -5.,  # final learning rate = lr0 * (10 ** lrf)
+       'momentum': 0.90,  # SGD momentum
+       'weight_decay': 0.0005}  # optimizer weight decay
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
     parser.add_argument("--batch_size", type=int, default=8, help="size of each image batch")
-    parser.add_argument("--gradient_accumulations", type=int, default=2, help="number of gradient accums before step")
-    parser.add_argument("--model_def", type=str, default="config/yolov3.cfg", help="path to model definition file")
-    parser.add_argument("--data_config", type=str, default="config/coco.data", help="path to data config file")
+    parser.add_argument("--gradient_accumulations", type=int, default=8, help="number of gradient accums before step")
+    parser.add_argument("--model_def", type=str, default="config/yolov3-1cls-tiny.cfg", help="path to model definition file")
+    parser.add_argument("--data_config", type=str, default="config/senior2bbb_depth-post_0_0.85.data", help="path to data config file")
     parser.add_argument("--pretrained_weights", type=str, help="if specified starts from checkpoint model")
     parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
-    parser.add_argument("--checkpoint_interval", type=int, default=1, help="interval between saving model weights")
+    parser.add_argument("--checkpoint_interval", type=int, default=10, help="interval between saving model weights")
     parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
+    parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
+    parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
+    parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
+    parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     opt = parser.parse_args()
     print(opt)
 
@@ -43,28 +56,48 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    os.makedirs("output", exist_ok=True)
-    os.makedirs("checkpoints", exist_ok=True)
+    os.makedirs(f"{opt.output}", exist_ok=True)
+    os.makedirs(f"{opt.checkpoints}", exist_ok=True)
+    results_file = os.path.join(opt.output, 'results.txt')
 
     # Get data configuration
     data_config = parse_data_config(opt.data_config)
     train_path = data_config["train"]
-    valid_path = data_config["valid"]
+    # valid_path = data_config["valid"]
     class_names = load_classes(data_config["names"])
 
     # Initiate model
     model = Darknet(opt.model_def).to(device)
     model.apply(weights_init_normal)
 
+    # optimizer = torch.optim.Adam(model.parameters())
+    optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
+
     # If specified we start from checkpoint
+    st_epoch = 0
     if opt.pretrained_weights:
         if opt.pretrained_weights.endswith(".pth"):
-            model.load_state_dict(torch.load(opt.pretrained_weights))
+            chkpt = torch.load(opt.pretrained_weights, map_location=device)  # load checkpoint
+            model.load_state_dict(chkpt['model'])
+            st_epoch = chkpt['epoch'] + 1
+            if chkpt['optimizer'] is not None:
+                optimizer.load_state_dict(chkpt['optimizer'])
+            del chkpt
         else:
             model.load_darknet_weights(opt.pretrained_weights)
+            # Remove old results
+            debug_images = os.path.join(opt.output, '*_batch*.jpg')
+            for f in glob.glob(debug_images) + glob.glob(results_file):
+                os.remove(f)
 
     # Get dataloader
-    dataset = ListDataset(train_path, augment=True, multiscale=opt.multiscale_training)
+    dataset = ListDataset(train_path,
+                          augment=True,
+                          multiscale=opt.multiscale_training,
+                          rescale_every_n_batches=opt.rescale_every_n_batches,
+                          img_norm=data_config['normalization'],
+                          color_map=data_config['color_map'])
+
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=opt.batch_size,
@@ -74,7 +107,8 @@ if __name__ == "__main__":
         collate_fn=dataset.collate_fn,
     )
 
-    optimizer = torch.optim.Adam(model.parameters())
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (0.8, 0.9)], gamma=0.1)
+    scheduler.last_epoch = st_epoch - 1
 
     metrics = [
         "grid_size",
@@ -93,14 +127,36 @@ if __name__ == "__main__":
         "conf_noobj",
     ]
 
-    for epoch in range(opt.epochs):
+    nb = len(dataloader)
+    n_burnin = min(round(nb / 5 + 1), 1000)  # burn-in batches
+
+    best_mAP = .0
+
+    for epoch in range(st_epoch, opt.epochs):
+
         model.train()
+        scheduler.step()
+
         start_time = time.time()
-        for batch_i, (_, imgs, targets) in enumerate(dataloader):
+        # loss_batches_tr = []
+        mloss = 0.
+        pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
+        for batch_i, (_, imgs, targets, img_size) in pbar:
             batches_done = len(dataloader) * epoch + batch_i
 
             imgs = Variable(imgs.to(device))
             targets = Variable(targets.to(device), requires_grad=False)
+
+            # Plot images with bounding boxes
+            if epoch == 0 and batch_i == 0:
+                plot_images(imgs=imgs, targets=targets,
+                            fname=os.path.join(opt.output, 'train_batch-%g.jpg') % batch_i)
+
+            # SGD burn-in
+            if epoch == 0 and batch_i <= n_burnin:
+                lr = hyp['lr0'] * (batch_i / n_burnin) ** 4
+                for pg in optimizer.param_groups:
+                    pg['lr'] = lr
 
             loss, outputs = model(imgs, targets)
             loss.backward()
@@ -114,7 +170,7 @@ if __name__ == "__main__":
             #   Log progress
             # ----------------
 
-            log_str = "\n---- [Epoch %d/%d, Batch %d/%d] ----\n" % (epoch, opt.epochs, batch_i, len(dataloader))
+            # log_str = "\n---- [Epoch %d/%d, Batch %d/%d] ----\n" % (epoch, opt.epochs, batch_i, len(dataloader))
 
             metric_table = [["Metrics", *[f"YOLO Layer {i}" for i in range(len(model.yolo_layers))]]]
 
@@ -135,44 +191,88 @@ if __name__ == "__main__":
                 tensorboard_log += [("loss", loss.item())]
                 logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
-            log_str += AsciiTable(metric_table).table
-            log_str += f"\nTotal loss {loss.item()}"
+            # log_str += AsciiTable(metric_table).table
+            # log_str += f"\nTotal loss {loss.item()}"
 
             # Determine approximate time left for epoch
             epoch_batches_left = len(dataloader) - (batch_i + 1)
             time_left = datetime.timedelta(seconds=epoch_batches_left * (time.time() - start_time) / (batch_i + 1))
-            log_str += f"\n---- ETA {time_left}"
+            # log_str += f"\n---- ETA {time_left}"
 
-            print(log_str)
+            # print(log_str)
 
             model.seen += imgs.size(0)
+            # loss_batches_tr += [loss.item()]
+
+            mloss = (mloss * batch_i + loss.item()) / (batch_i + 1)  # update mean losses
+
+            s = ('%8s%12s' + '%10.3g' * 3) % (
+                '%g/%g' % (epoch, opt.epochs - 1), '%g/%g' % (batch_i, nb - 1), mloss, len(targets), img_size)
+            pbar.set_description(s)
 
         if epoch % opt.evaluation_interval == 0:
             print("\n---- Evaluating Model ----")
             # Evaluate the model on the validation set
-            precision, recall, AP, f1, ap_class = evaluate(
+            loss_batches_eval, precision, recall, AP, f1, ap_class = evaluate(
                 model,
-                path=valid_path,
+                data_config,
+                opt.output,
+                # path=valid_path,
                 iou_thres=0.5,
                 conf_thres=0.5,
                 nms_thres=0.5,
                 img_size=opt.img_size,
                 batch_size=8,
+                num_workers=8
             )
             evaluation_metrics = [
+                # ("tr_loss", np.mean(loss_batches_tr)),
+                ("tr_loss", mloss),
+                ("val_loss", np.mean(loss_batches_eval)),
                 ("val_precision", precision.mean()),
                 ("val_recall", recall.mean()),
                 ("val_mAP", AP.mean()),
                 ("val_f1", f1.mean()),
             ]
+
             logger.list_of_scalars_summary(evaluation_metrics, epoch)
 
-            # Print class APs and mAP
-            ap_table = [["Index", "Class name", "AP"]]
-            for i, c in enumerate(ap_class):
-                ap_table += [[c, class_names[c], "%.5f" % AP[i]]]
-            print(AsciiTable(ap_table).table)
-            print(f"---- mAP {AP.mean()}")
+            summary_table = [['#epoch'] + [metric_name for metric_name, _ in evaluation_metrics]]
+            summary_table += [['%d/%d' % (epoch+1, opt.epochs)] + ["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
+            print(AsciiTable(summary_table).table)
 
-        if epoch % opt.checkpoint_interval == 0:
-            torch.save(model.state_dict(), f"checkpoints/yolov3_ckpt_%d.pth" % epoch)
+            # Print class APs and mAP
+            # ap_table = [["Index", "Class name", "AP"]]
+            # for i, c in enumerate(ap_class):
+            #     ap_table += [[c, class_names[c], "%.5f" % AP[i]]]
+            # print(AsciiTable(ap_table).table)
+            # print(f"---- mAP {AP.mean()}")
+
+            # s = ('%8s%12s' + '%10.3g' * 7) % (
+            #     '%g/%g' % (epoch, epochs - 1), '%g/%g' % (i, nb - 1), *mloss, len(targets), img_size)
+            # with open(results_file, 'a') as file:
+            #     file.write(s + '%11.3g' * 5 % results + '\n')
+
+        # Save training results
+        save = (not opt.nosave) or (epoch == opt.epochs - 1)
+        if save:
+            chkpt = {'epoch': epoch,
+                     'model': model.state_dict(),
+                     'optimizer': optimizer.state_dict()}
+
+            # latest
+            torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_latest.pth")
+
+            # best, based on mAP
+            if evaluation_metrics[1][1] > best_mAP:
+                best_mAP = evaluation_metrics[1][1]
+                torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_best.pth")
+
+            # periodic saving, every opt.checkpoint_interval
+            if epoch % opt.checkpoint_interval == 0:
+                torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_%d.pth" % epoch)
+
+            # Delete checkpoint
+            del chkpt
+
+
