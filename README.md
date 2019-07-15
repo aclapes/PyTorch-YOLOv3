@@ -1,9 +1,17 @@
 # PyTorch-YOLOv3
-A minimal PyTorch implementation of YOLOv3, with support for training, inference and evaluation.
+A fork of a minimal PyTorch implementation of YOLOv3, with support for training, inference and evaluation.
 
 ## Installation
+##### Install Opencv 3.X
+    $ wget https://github.com/opencv/opencv/archive/3.4.6.zip
+    $ unzip openv-3.4.6.zip && cd opencv-3.4.6
+    $ mkdir build-release && cd build-release
+    $ cmake -DCMAKE_BUILD_TYPE=Release ..
+    $ make -j[num_processors]
+    $ sudo make install
+    
 ##### Clone and install requirements
-    $ git clone https://github.com/eriklindernoren/PyTorch-YOLOv3
+    $ git clone https://github.com/aclapes/PyTorch-YOLOv3
     $ cd PyTorch-YOLOv3/
     $ sudo pip3 install -r requirements.txt
 
