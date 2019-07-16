@@ -1,7 +1,7 @@
 classes=1
 train=/data/senior2bb_data_yolov3/train/rs/depth-10000_pre/list-0.9.txt
 valid=/data/senior2bb_data_yolov3/valid/rs/depth-5000_pre/list-0.9.txt
-names=/data/senior2bb_data_yolov3/classes.names
+names=data/senior.names
 backup=backup/
 eval=coco
 normalization=minmax:0,10000
