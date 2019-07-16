@@ -6,21 +6,11 @@ from utils.datasets import *
 from utils.parse_config import parse_data_config
 
 import os
-import sys
 import time
-import datetime
 import argparse
-
-from PIL import Image
 
 import torch
 from torch.utils.data import DataLoader
-from torchvision import datasets
-from torch.autograd import Variable
-
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.ticker import NullLocator
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -84,8 +74,8 @@ if __name__ == "__main__":
         for i, (path, img0, dets_img) in enumerate(zip(paths, imgs0, dets)):
             print("[%d/%d] Image: '%s'" % (batch_i * opt.batch_size + i + 1, len(dataset), path))
 
-            img0 = cv2.resize(img0, (int(img0.shape[1] * opt.scale_factor), int(img0.shape[0] * opt.scale_factor)),
-                              interpolation=cv2.INTER_AREA)
+            h, w = img0.shape[:2]
+            img0 = cv2.resize(img0, (int(w*opt.scale_factor), int(h*opt.scale_factor)), interpolation=cv2.INTER_AREA)
 
             # Draw bounding boxes and labels of detections
             if dets_img is not None:
@@ -102,6 +92,6 @@ if __name__ == "__main__":
                     plot_one_box(x1, y1, x2, y2, img0, label=label, color=colors[int(cls)])
 
             filename = path.split("/")[-1].split(".")[0]
-            cv2.imwrite(f"{opt.detection_images}/{filename}.png", img0)
+            cv2.imwrite(f"{opt.detection_images}/{filename}.jpg", img0)
 
     print("Done. (%2.2f)" % (time.time() - st_time))
