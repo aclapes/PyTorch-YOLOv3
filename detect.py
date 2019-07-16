@@ -84,7 +84,7 @@ if __name__ == "__main__":
         for i, (path, img0, dets_img) in enumerate(zip(paths, imgs0, dets)):
             print("[%d/%d] Image: '%s'" % (batch_i * opt.batch_size + i + 1, len(dataset), path))
 
-            img0 = cv2.resize(img0, (int(img0.shape[0] * opt.scale_factor), int(img0.shape[1] * opt.scale_factor)),
+            img0 = cv2.resize(img0, (int(img0.shape[1] * opt.scale_factor), int(img0.shape[0] * opt.scale_factor)),
                               interpolation=cv2.INTER_AREA)
 
             # Draw bounding boxes and labels of detections
