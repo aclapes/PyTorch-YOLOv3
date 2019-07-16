@@ -91,12 +91,18 @@ if __name__ == "__main__":
                 os.remove(f)
 
     # Get dataloader
-    dataset = ListDataset(train_path,
-                          augment=True,
-                          multiscale=opt.multiscale_training,
-                          rescale_every_n_batches=opt.rescale_every_n_batches,
+    dataset_a = ListDataset(train_path,
                           img_norm=data_config['normalization'],
                           color_map=data_config['color_map'])
+
+    dataset_b = ListDataset(train_path,
+                          img_norm=data_config['normalization'],
+                          color_map=data_config['color_map'])
+
+    dataset = ParallelDataset([dataset_a, dataset_b],
+                              augment=True,
+                              multiscale=opt.multiscale_training,
+                              rescale_every_n_batches=opt.rescale_every_n_batches)
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -141,7 +147,9 @@ if __name__ == "__main__":
         # loss_batches_tr = []
         mloss = 0.
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
-        for batch_i, (_, imgs, targets, img_size) in pbar:
+        for batch_i, (batch_data, img_size) in pbar:
+            imgs = batch_data[0][1]
+            targets = batch_data[0][2]
             batches_done = len(dataloader) * epoch + batch_i
 
             imgs = Variable(imgs.to(device))
