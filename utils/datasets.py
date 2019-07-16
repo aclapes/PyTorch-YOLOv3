@@ -7,8 +7,10 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import cv2
+import torchvision.transforms
 
 from utils.preprocessing import image_normalization
+from utils.parse_config import parse_normalization
 from utils.augmentations import horisontal_flip, get_affine_transformation, apply_affine
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
@@ -27,8 +29,8 @@ def pad_to_square(img, pad_value):
     return img, pad
 
 
-def resize(image, size):
-    image = F.interpolate(image.unsqueeze(0), size=size, mode="nearest").squeeze(0)
+def resize(image, size, squeeze_dim=0):
+    image = F.interpolate(image.unsqueeze(squeeze_dim), size=size, mode="nearest").squeeze(squeeze_dim)
     return image
 
 
@@ -39,23 +41,57 @@ def random_resize(images, min_size=288, max_size=448):
 
 
 class ImageFolder(Dataset):
-    def __init__(self, folder_path, img_size=416):
+    def __init__(self, folder_path, img_size=416, img_norm=None, color_map=False):
         self.files = sorted(glob.glob("%s/*.*" % folder_path))
         self.img_size = img_size
+        self.img_norm, self.img_norm_rng = parse_normalization(img_norm)
+        self.color_map = int(color_map)
 
     def __getitem__(self, index):
         img_path = self.files[index % len(self.files)]
+
         # Extract image as PyTorch tensor
-        img = transforms.ToTensor()(Image.open(img_path))
+        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+        try:
+            img0 = img.copy()
+        except AttributeError:
+            return img_path, None, None
+
+        if len(img.shape) != 3:
+            if self.img_norm:
+                img = image_normalization(img, self.img_norm, self.img_norm_rng)
+                img0 = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_32FC1)
+
+            img0 = np.tile(img0[:, :, np.newaxis], 3)
+            if not self.color_map:
+                img = np.tile(img[:, :, np.newaxis], 3)
+            else:
+                img = cv2.applyColorMap(img.astype(np.uint8), colormap=cv2.COLORMAP_JET)
+
         # Pad to square resolution
         img, _ = pad_to_square(img, 0)
-        # Resize
-        img = resize(img, self.img_size)
 
-        return img_path, img
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # Opencv's BGR to RGB, to 3x416x416
+        img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
+        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+
+        img = torch.from_numpy(img)
+        resize(img, self.img_size)
+
+        return img_path, img, img0
 
     def __len__(self):
         return len(self.files)
+
+    def collate_fn(self, batch):
+        paths, imgs, imgs0 = [], [], []
+        for path, img, img0 in batch:
+            if img is not None:
+                paths.append(path)
+                imgs.append(resize(img, self.img_size))  # resize!
+                imgs0.append(img0)
+
+        return paths, torch.stack(imgs), imgs0
 
 
 class ListDataset(Dataset):
@@ -79,12 +115,14 @@ class ListDataset(Dataset):
         self.max_size = self.img_size + 3 * 32
         self.batch_count = 0
 
-        self.img_norm = None
-        if img_norm:
-            im_norm_split = img_norm.split(':')
-            self.img_norm = im_norm_split[0]
-            if len(im_norm_split) > 0:
-                self.im_norm_rng = [float(x) for x in im_norm_split[1].split(',')]
+        # self.img_norm = None
+        # self.im_norm_rng = None
+        # if img_norm:
+        #     im_norm_split = img_norm.split(':')
+        #     self.img_norm = im_norm_split[0]
+        #     if len(im_norm_split) > 0:
+        #         self.im_norm_rng = [float(x) for x in im_norm_split[1].split(',')]
+        self.img_norm, self.img_norm_rng = parse_normalization(img_norm)
 
         self.color_map = int(color_map)
 
@@ -129,28 +167,6 @@ class ListDataset(Dataset):
 
         label_path = self.label_files[index % len(self.img_files)].rstrip()
 
-        # targets = None
-        # if os.path.exists(label_path):
-        #     boxes = torch.from_numpy(np.loadtxt(label_path).reshape(-1, 5))
-        #     # Extract coordinates for unpadded + unscaled image
-        #     x1 = w_factor * (boxes[:, 1] - boxes[:, 3] / 2)
-        #     y1 = h_factor * (boxes[:, 2] - boxes[:, 4] / 2)
-        #     x2 = w_factor * (boxes[:, 1] + boxes[:, 3] / 2)
-        #     y2 = h_factor * (boxes[:, 2] + boxes[:, 4] / 2)
-        #     # Adjust for added padding
-        #     x1 += pad[0]
-        #     y1 += pad[2]
-        #     x2 += pad[1]
-        #     y2 += pad[3]
-        #     # Returns (x, y, w, h)
-        #     boxes[:, 1] = ((x1 + x2) / 2) / padded_w
-        #     boxes[:, 2] = ((y1 + y2) / 2) / padded_h
-        #     boxes[:, 3] *= w_factor / padded_w
-        #     boxes[:, 4] *= h_factor / padded_h
-        #
-        #     targets = torch.zeros((len(boxes), 6))
-        #     targets[:, 1:] = boxes
-
         labels_xyxy = None
         if os.path.exists(label_path):
             boxes = np.loadtxt(label_path).reshape(-1, 5)
@@ -191,7 +207,7 @@ class ListDataset(Dataset):
             targets[:, 1:] = torch.from_numpy(labels_xywh)
 
         if self.img_norm:
-            img = image_normalization(img, self.img_norm, self.im_norm_rng)
+            img = image_normalization(img, self.img_norm, self.img_norm_rng)
 
         if self.color_map:
             img = cv2.applyColorMap(img.astype(np.uint8), colormap=cv2.COLORMAP_JET)

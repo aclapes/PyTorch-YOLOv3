@@ -34,3 +34,17 @@ def parse_data_config(path):
         key, value = line.split('=')
         options[key.strip()] = value.strip()
     return options
+
+def parse_normalization(line):
+    if line:
+        im_norm_split = line.split(':')
+        img_norm = im_norm_split[0]
+        if len(im_norm_split) == 0:
+            return img_norm
+        else:
+            img_rng = [float(x) for x in im_norm_split[1].split(',')]
+            return img_norm, img_rng
+    else:
+        return None, None
+
+

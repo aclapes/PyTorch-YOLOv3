@@ -9,6 +9,8 @@ from torch.autograd import Variable
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import cv2
+import random
 
 
 def to_cpu(tensor):
@@ -22,6 +24,11 @@ def load_classes(path):
     fp = open(path, "r")
     names = fp.read().split("\n")[:-1]
     return names
+# def load_classes(path):
+#     # Loads *.names file at 'path'
+#     with open(path, 'r') as f:
+#         names = f.read().split('\n')
+#     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
 
 def weights_init_normal(m):
@@ -497,3 +504,17 @@ def build_targets(pred_boxes, pred_cls, target, anchors, ignore_thres):
 
     tconf = obj_mask.float()
     return iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf
+
+
+def plot_one_box(x1, y1, x2, y2, img, color=None, label=None, line_thickness=None):
+    # Plots one bounding box on image img
+    tl = line_thickness or round(0.002 * max(img.shape[0:2])) + 1  # line thickness
+    color = color or [random.randint(0, 255) for _ in range(3)]
+    c1, c2 = (int(x1), int(y1)), (int(x2), int(y2))
+    cv2.rectangle(img, c1, c2, color, thickness=tl)
+    if label:
+        tf = max(tl - 1, 1)  # font thickness
+        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
+        c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
+        cv2.rectangle(img, c1, c2, color, -1)  # filled
+        cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
