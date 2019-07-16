@@ -20,19 +20,20 @@ from torch.autograd import Variable
 import torch.optim as optim
 
 
-def evaluate(model, data_config, output, iou_thres, conf_thres, nms_thres, img_size, batch_size, num_workers=8):
+def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_size, batch_size, num_workers=8):
     model.eval()
 
     # Get dataloader
-    dataset = ListDataset(data_config['valid'],
-                          img_size=img_size,
-                          augment=False,
-                          multiscale=False,
-                          img_norm=data_config['normalization'],
-                          color_map=data_config['color_map'])
+    datasets = [ListDataset(cfg["valid"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
+                         for cfg in data_configs]
+
+    multidataset = ParallelDataset(datasets,
+                              img_size=img_size,
+                              augment=False,
+                              multiscale=False)
 
     dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=dataset.collate_fn
+        multidataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=multidataset.collate_fn
     )
 
     Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
@@ -40,7 +41,10 @@ def evaluate(model, data_config, output, iou_thres, conf_thres, nms_thres, img_s
     labels = []
     sample_metrics = []  # List of tuples (TP, confs, pred)
     loss_batches_eval = []
-    for batch_i, (_, imgs, targets, _) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
+    # for batch_i, (_, imgs, targets, _) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
+    for batch_i, (batch_data, img_size) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
+        imgs = batch_data[0][1]
+        targets = batch_data[0][2]
         if batch_i == 0:
             plot_images(imgs=imgs, targets=targets,
                         fname=os.path.join(output, 'test_batch-%g.jpg') % batch_i)

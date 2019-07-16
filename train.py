@@ -61,10 +61,9 @@ if __name__ == "__main__":
     results_file = os.path.join(opt.output, 'results.txt')
 
     # Get data configuration
-    data_config = parse_data_config(opt.data_config)
-    train_path = data_config["train"]
-    # valid_path = data_config["valid"]
-    class_names = load_classes(data_config["names"])
+    data_configs = [parse_data_config(cfg_file) for cfg_file in opt.data_config.split(',')]
+    # train_path = data_config["train"]
+    # class_names = load_classes(data_config["names"])
 
     # Initiate model
     model = Darknet(opt.model_def).to(device)
@@ -90,27 +89,38 @@ if __name__ == "__main__":
             for f in glob.glob(debug_images) + glob.glob(results_file):
                 os.remove(f)
 
+    datasets = [ListDataset(cfg["train"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
+                for cfg in data_configs]
+
     # Get dataloader
-    dataset_a = ListDataset(train_path,
-                          img_norm=data_config['normalization'],
-                          color_map=data_config['color_map'])
+    multidataset = ParallelDataset(datasets,
+                                   augment=True,
+                                   multiscale=opt.multiscale_training,
+                                   rescale_every_n_batches=opt.rescale_every_n_batches)
 
-    dataset_b = ListDataset(train_path,
-                          img_norm=data_config['normalization'],
-                          color_map=data_config['color_map'])
-
-    dataset = ParallelDataset([dataset_a, dataset_b],
-                              augment=True,
-                              multiscale=opt.multiscale_training,
-                              rescale_every_n_batches=opt.rescale_every_n_batches)
+    # train_dict = dict()
+    # nc = -1
+    # for i in range(len(data_cfg)):
+    #     train_cfg = parse_data_cfg(data_cfg[i])
+    #     nc_i = int(train_cfg['classes'])  # number of classes
+    #
+    #     if nc > 0:
+    #         assert nc_i == nc
+    #     nc = nc_i
+    #
+    #     train_dict[data_cfg[i]] = dict(
+    #         data=train_cfg['train'],
+    #         normalization=train_cfg['normalization'] if 'normalization' in train_cfg else None,
+    #         apply_cmap=int(train_cfg['apply_cmap']) if 'apply_cmap' in train_cfg else False
+    #     )
 
     dataloader = torch.utils.data.DataLoader(
-        dataset,
+        multidataset,
         batch_size=opt.batch_size,
         shuffle=True,
         num_workers=opt.n_cpu,
         pin_memory=True,
-        collate_fn=dataset.collate_fn,
+        collate_fn=multidataset.collate_fn,
     )
 
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (0.8, 0.9)], gamma=0.1)
@@ -144,7 +154,7 @@ if __name__ == "__main__":
         scheduler.step()
 
         start_time = time.time()
-        # loss_batches_tr = []
+        # loss_bat  ches_tr = []
         mloss = 0.
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for batch_i, (batch_data, img_size) in pbar:
@@ -223,7 +233,7 @@ if __name__ == "__main__":
             # Evaluate the model on the validation set
             loss_batches_eval, precision, recall, AP, f1, ap_class = evaluate(
                 model,
-                data_config,
+                data_configs,
                 opt.output,
                 # path=valid_path,
                 iou_thres=0.5,

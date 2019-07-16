@@ -266,22 +266,22 @@ class ParallelDataset(Dataset):
     #         assert self.max_size == dset.max_size
     #
     #     self.batch_count = 0
-    def __init__(self, datasets, augment=True, multiscale=False, rescale_every_n_batches=10):
-        assert datasets and len(datasets) > 1
+    def __init__(self, datasets, img_size=416, augment=True, multiscale=False, rescale_every_n_batches=10):
+        # assert datasets and len(datasets) > 1
         self.datasets = datasets
 
         self.n = len(self.datasets[0])
-        self.img_size = self.datasets[0].img_size
 
         # check integrity
         for dset in self.datasets[1:]:
             assert self.n == len(dset)
-            assert self.img_size == dset.img_size
 
         # these will override original individual dataset parametrizations
+        self.img_size = img_size
         self.augment = augment
         self.multiscale = multiscale
         self.rescale_every_n_batches = rescale_every_n_batches
+
         self.min_size = self.img_size - 3 * 32
         self.max_size = self.img_size + 3 * 32
 
