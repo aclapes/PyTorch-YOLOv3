@@ -75,19 +75,21 @@ if __name__ == "__main__":
     # If specified we start from checkpoint
     st_epoch = 0
     if opt.pretrained_weights:
-        if opt.pretrained_weights.endswith(".pth"):
-            chkpt = torch.load(opt.pretrained_weights, map_location=device)  # load checkpoint
+        weights = [w for w in opt.pretrained_weights.split(',')]
+        if len(weights) == 1 and weights[0].endswith('.pth'):
+            chkpt = torch.load(weights[0], map_location=device)  # load checkpoint
             model.load_state_dict(chkpt['model'])
             st_epoch = chkpt['epoch'] + 1
             if chkpt['optimizer'] is not None:
                 optimizer.load_state_dict(chkpt['optimizer'])
             del chkpt
         else:
-            # model.load_darknet_weights(opt.pretrained_weights)  # TODO: fix
-            # Remove old results
-            debug_images = os.path.join(opt.output, '*_batch*.jpg')
-            for f in glob.glob(debug_images) + glob.glob(results_file):
-                os.remove(f)
+            for k, w in enumerate(weights):
+                model.load_darknet_weights(w, k=k, cutoff=15)
+                # Remove old results
+                debug_images = os.path.join(opt.output, '*_batch*.jpg')
+                for f in glob.glob(debug_images) + glob.glob(results_file):
+                    os.remove(f)
 
     datasets = [ListDataset(cfg["train"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
                 for cfg in data_configs]

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 from collections import OrderedDict
+import argparse
 
 from utils.parse_config import *
 from utils.utils import build_targets, to_cpu, common_entries, non_max_suppression
@@ -449,14 +450,18 @@ class Darknet(nn.Module):
 
     def __init__(self, config_path, img_size=416):
         super(Darknet, self).__init__()
-        self.hyperparams, self.sx_module_defs = parse_model_cfg(config_path)
-        self.sx_module_lists = create_modules(self.hyperparams, self.sx_module_defs) # pylist of pylists (not nn.ModuleList)
+        hyp, self.sx_module_defs = parse_model_cfg(config_path)
+        self.sx_module_lists = create_modules(hyp, self.sx_module_defs) # pylist of pylists (not nn.ModuleList)
         self.yolo_layers = get_yolo_layers(self)
         self.img_size = img_size  # not used?
         self.seen = 0
         self.header_info = np.array([0, 0, 0, self.seen, 0], dtype=np.int32)
         # create an actual nn.ModuleList (so it registers model parameters, so optimizer "sees" them)
         self.module_list = nn.ModuleList([m for _, sublist in self.sx_module_lists.items() for m in sublist])
+
+        hyp['input_streams'] = hyp['input_streams'].split(',') if 'input_streams' in hyp else ['0']
+        self.hyperparams = hyp
+
 
     def forward(self, x0, targets=None):
         img_dim = max(x0[0].shape[-2:])
@@ -498,30 +503,35 @@ class Darknet(nn.Module):
 
         return yolo_outputs if targets is None else (loss, yolo_outputs)
 
-    def load_darknet_weights(self, weights_path):
+    def load_darknet_weights(self, weights_path, k=0, cutoff=-1):
         """Parses and loads the weights stored in 'weights_path'"""
 
-        # Open the weights file
+        # Open the weiheader[-1]coghts file
         with open(weights_path, "rb") as f:
-            header = np.fromfile(f, dtype=np.int32, count=5)  # First five are header values
-            self.header_info = header  # Needed to write header when saving weights
+            header = np.fromfile(f, dtype=np.int32, count=(5+1))  # First five are header values
+            self.header_info = header[:-1]  # Needed to write header when saving weights
             self.seen = header[3]  # number of images seen during training
+            self.header_len_streams = np.fromfile(f, dtype=np.int32, count=header[-1])
             weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
 
         # Establish cutoff for loading backbone weights
-        cutoff = None
-        if "darknet53.conv.74" in weights_path:
-            cutoff = 75  # TODO: adjust number to layers that need initialization, not all of them
-        elif 'yolov3-tiny.conv.15' in weights_path:
-            cutoff = 9
+        # cutoff = None
+        # if "darknet53.conv.74" in weights_path:
+        #     cutoff = 75  # TODO: adjust number to layers that need initialization, not all of them
+        # elif 'yolov3-tiny.conv.15' in weights_path:
+        #     cutoff = 9
 
         c = 0
         ptr = 0
-        for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
-            if c == cutoff:
-                break
+
+        sx = self.hyperparams['input_streams'][k]
+        defs_sx = self.sx_module_defs[sx]
+        modules_sx = self.sx_module_lists[sx]
+
+        for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff], modules_sx[:cutoff])):
             if module_def["type"] == "convolutional":
                 conv_layer = module[0]
+                print(f"{sx,i,c}")
                 c += 1
                 if module_def["batch_normalize"]:
                     # Load BN bias, weights, running mean and running variance
@@ -555,30 +565,85 @@ class Darknet(nn.Module):
                 conv_layer.weight.data.copy_(conv_w)
                 ptr += num_w
 
-    def save_darknet_weights(self, path, cutoff=-1):
+    def save_darknet_weights(self, path, cutoff=None):
         """
             @:param path    - path of the new weights file
             @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
         """
-        fp = open(path, "wb")
+
+        # cutoff needs to be: (a) a scalar, (b) a dict, or (c) None.
+        if not hasattr(cutoff, '__len__'):  # if a scalar
+            cutoff = {'0': cutoff}
+        elif isinstance(cutoff, dict):
+            assert len(cutoff) == len(self.sx_module_defs)  # error check
+        elif cutoff is None:
+            cutoff = {sx: -1 for sx in self.sx_module_defs.keys()}
+        else:
+            raise AttributeError
+
+        conv_modules = []
+        for sx, modules_sx in self.sx_module_defs.items():
+            cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
+                           if cutoff[sx] == -1 or i < cutoff[sx]]
+            conv_modules += [np.sum(cutoff_list)]
+
+        self.header_len_streams = np.array([len(self.sx_module_defs)] + conv_modules, dtype=np.int32)
         self.header_info[3] = self.seen
-        self.header_info.tofile(fp)
+
+        fp = open(path, "wb")
+        np.concatenate([self.header_info, self.header_len_streams]).tofile(fp)
 
         # Iterate through layers
-        for i, (module_def, module) in enumerate(zip(self.module_defs[:cutoff], self.module_list[:cutoff])):
-            if module_def["type"] == "convolutional":
-                conv_layer = module[0]
-                # If batch norm, load bn first
-                if module_def["batch_normalize"]:
-                    bn_layer = module[1]
-                    bn_layer.bias.data.cpu().numpy().tofile(fp)
-                    bn_layer.weight.data.cpu().numpy().tofile(fp)
-                    bn_layer.running_mean.data.cpu().numpy().tofile(fp)
-                    bn_layer.running_var.data.cpu().numpy().tofile(fp)
-                # Load conv bias
-                else:
-                    conv_layer.bias.data.cpu().numpy().tofile(fp)
-                # Load conv weights
-                conv_layer.weight.data.cpu().numpy().tofile(fp)
+        for sx, defs_sx in self.sx_module_defs.items():
+            modules_sx = self.sx_module_lists[sx]
+            for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
+                if module_def["type"] == "convolutional":
+                    conv_layer = module[0]
+                    # If batch norm, load bn first
+                    if module_def["batch_normalize"]:
+                        bn_layer = module[1]
+                        bn_layer.bias.data.cpu().numpy().tofile(fp)
+                        bn_layer.weight.data.cpu().numpy().tofile(fp)
+                        bn_layer.running_mean.data.cpu().numpy().tofile(fp)
+                        bn_layer.running_var.data.cpu().numpy().tofile(fp)
+                    # Load conv bias
+                    else:
+                        conv_layer.bias.data.cpu().numpy().tofile(fp)
+                    # Load conv weights
+                    conv_layer.weight.data.cpu().numpy().tofile(fp)
 
         fp.close()
+
+
+def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
+    # Converts between PyTorch and Darknet format per extension (i.e. *.weights convert to *.pt and vice versa)
+    # from models import *; convert('cfg/yolov3-spp.cfg', 'weights/yolov3-spp.weights')
+
+    # Initialize model
+    model = Darknet(cfg)
+
+    # Load weights and save
+    if weights.endswith('.pth') or weights.endswith('.pt'):  # if PyTorch format
+        model.load_state_dict(torch.load(weights, map_location='cpu')['model'])
+        model.save_darknet_weights('converted.weights', cutoff=-1)
+        print("Success: converted '%s' to 'converted.weights'" % weights)
+
+    elif weights.endswith('.weights'):  # darknet format
+        _ = model.load_darknet_weights(weights)
+        chkpt = {'epoch': -1, 'best_loss': None, 'model': model.state_dict(), 'optimizer': None}
+        torch.save(chkpt, 'converted.pt')
+        print("Success: converted '%s' to 'converted.pt'" % weights)
+
+    else:
+        print('Error: extension not supported.')
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_def", type=str, default="config/yolov3-1cls-dropout-supertiny.cfg", help="path to model definition file")
+    parser.add_argument("--weights", type=str, help="if specified starts from checkpoint model")
+    opt = parser.parse_args()
+    print(opt)
+
+    convert(opt.model_def, opt.weights)
+
