@@ -69,8 +69,8 @@ if __name__ == "__main__":
     model = Darknet(opt.model_def).to(device)
     model.apply(weights_init_normal)
 
-    # optimizer = torch.optim.Adam(model.parameters())
-    optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
+    optimizer = torch.optim.Adam(model.parameters())
+    # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
 
     # If specified we start from checkpoint
     st_epoch = 0
@@ -123,8 +123,8 @@ if __name__ == "__main__":
         collate_fn=multidataset.collate_fn,
     )
 
-    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (0.8, 0.9)], gamma=0.1)
-    scheduler.last_epoch = st_epoch - 1
+    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (0.8, 0.9)], gamma=0.1)
+    # scheduler.last_epoch = st_epoch - 1
 
     metrics = [
         "grid_size",
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     for epoch in range(st_epoch, opt.epochs):
 
         model.train()
-        scheduler.step()
+        # scheduler.step()
 
         start_time = time.time()
         # loss_bat  ches_tr = []
@@ -171,10 +171,10 @@ if __name__ == "__main__":
             #                 fname=os.path.join(opt.output, 'train_batch-%g.jpg') % batch_i)
 
             # SGD burn-in
-            if epoch == 0 and batch_i <= n_burnin:
-                lr = hyp['lr0'] * (batch_i / n_burnin) ** 4
-                for pg in optimizer.param_groups:
-                    pg['lr'] = lr
+            # if epoch == 0 and batch_i <= n_burnin:
+            #     lr = hyp['lr0'] * (batch_i / n_burnin) ** 4
+            #     for pg in optimizer.param_groups:
+            #         pg['lr'] = lr
 
             loss, outputs = model(imgs, targets)
             loss.backward()
