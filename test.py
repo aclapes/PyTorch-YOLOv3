@@ -43,15 +43,18 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
     loss_batches_eval = []
     # for batch_i, (_, imgs, targets, _) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
     for batch_i, (batch_data, img_size) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
-        imgs = batch_data[0][1]
-        targets = batch_data[0][2]
-        if batch_i == 0:
-            plot_images(imgs=imgs, targets=targets,
-                        fname=os.path.join(output, 'test_batch-%g.jpg') % batch_i)
+        paths, imgs, targets = list(zip(*batch_data))
 
-        imgs = Variable(imgs.type(Tensor), requires_grad=False)
+        imgs = [Variable(x.type(Tensor)) for x in imgs]
+        targets = Variable(targets[0].type(Tensor), requires_grad=False)
+
+        # if batch_i == 0:
+        #     plot_images(imgs=imgs, targets=targets,
+        #                 fname=os.path.join(output, 'test_batch-%g.jpg') % batch_i)
+
+        # imgs = Variable(imgs.type(Tensor), requires_grad=False)
         with torch.no_grad():
-            loss, outputs = model(imgs, Variable(targets.type(Tensor), requires_grad=False)) # targets only evaluation loss
+            loss, outputs = model(imgs, targets) # targets only evaluation loss
             outputs = non_max_suppression(outputs, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Extract labels
@@ -60,7 +63,7 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
         targets[:, 2:] = xywh2xyxy(targets[:, 2:])
         targets[:, 2:] *= img_size
 
-        sample_metrics += get_batch_statistics(outputs, targets, iou_threshold=iou_thres)
+        sample_metrics += get_batch_statistics(outputs, targets.cpu(), iou_threshold=iou_thres)
         loss_batches_eval += [loss.item()]
 
     # Concatenate sample statistics

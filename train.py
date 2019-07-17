@@ -83,7 +83,7 @@ if __name__ == "__main__":
                 optimizer.load_state_dict(chkpt['optimizer'])
             del chkpt
         else:
-            model.load_darknet_weights(opt.pretrained_weights)
+            # model.load_darknet_weights(opt.pretrained_weights)  # TODO: fix
             # Remove old results
             debug_images = os.path.join(opt.output, '*_batch*.jpg')
             for f in glob.glob(debug_images) + glob.glob(results_file):
@@ -158,17 +158,17 @@ if __name__ == "__main__":
         mloss = 0.
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for batch_i, (batch_data, img_size) in pbar:
-            imgs = batch_data[0][1]
-            targets = batch_data[0][2]
             batches_done = len(dataloader) * epoch + batch_i
 
-            imgs = Variable(imgs.to(device))
-            targets = Variable(targets.to(device), requires_grad=False)
+            paths, imgs, targets = list(zip(*batch_data))
+
+            imgs = [Variable(x.to(device)) for x in imgs]
+            targets = Variable(targets[0].to(device), requires_grad=False)
 
             # Plot images with bounding boxes
-            if epoch == 0 and batch_i == 0:
-                plot_images(imgs=imgs, targets=targets,
-                            fname=os.path.join(opt.output, 'train_batch-%g.jpg') % batch_i)
+            # if epoch == 0 and batch_i == 0:
+            #     plot_images(imgs=imgs, targets=targets,
+            #                 fname=os.path.join(opt.output, 'train_batch-%g.jpg') % batch_i)
 
             # SGD burn-in
             if epoch == 0 and batch_i <= n_burnin:
@@ -190,24 +190,24 @@ if __name__ == "__main__":
 
             # log_str = "\n---- [Epoch %d/%d, Batch %d/%d] ----\n" % (epoch, opt.epochs, batch_i, len(dataloader))
 
-            metric_table = [["Metrics", *[f"YOLO Layer {i}" for i in range(len(model.yolo_layers))]]]
-
-            # Log metrics at each YOLO layer
-            for i, metric in enumerate(metrics):
-                formats = {m: "%.6f" for m in metrics}
-                formats["grid_size"] = "%2d"
-                formats["cls_acc"] = "%.2f%%"
-                row_metrics = [formats[metric] % yolo.metrics.get(metric, 0) for yolo in model.yolo_layers]
-                metric_table += [[metric, *row_metrics]]
-
-                # Tensorboard logging
-                tensorboard_log = []
-                for j, yolo in enumerate(model.yolo_layers):
-                    for name, metric in yolo.metrics.items():
-                        if name != "grid_size":
-                            tensorboard_log += [(f"{name}_{j+1}", metric)]
-                tensorboard_log += [("loss", loss.item())]
-                logger.list_of_scalars_summary(tensorboard_log, batches_done)
+            # metric_table = [["Metrics", *[f"YOLO Layer {i}" for i in range(len(model.yolo_layers))]]]
+            #
+            # # Log metrics at each YOLO layer
+            # for i, metric in enumerate(metrics):
+            #     formats = {m: "%.6f" for m in metrics}
+            #     formats["grid_size"] = "%2d"
+            #     formats["cls_acc"] = "%.2f%%"
+            #     row_metrics = [formats[metric] % yolo.metrics.get(metric, 0) for yolo in model.yolo_layers]
+            #     metric_table += [[metric, *row_metrics]]
+            #
+            #     # Tensorboard logging
+            #     tensorboard_log = []
+            #     for j, yolo in enumerate(model.yolo_layers):
+            #         for name, metric in yolo.metrics.items():
+            #             if name != "grid_size":
+            #                 tensorboard_log += [(f"{name}_{j+1}", metric)]
+            #     tensorboard_log += [("loss", loss.item())]
+            #     logger.list_of_scalars_summary(tensorboard_log, batches_done)
 
             # log_str += AsciiTable(metric_table).table
             # log_str += f"\nTotal loss {loss.item()}"
@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
             # print(log_str)
 
-            model.seen += imgs.size(0)
+            model.seen += imgs[0].size(0)
             # loss_batches_tr += [loss.item()]
 
             mloss = (mloss * batch_i + loss.item()) / (batch_i + 1)  # update mean losses

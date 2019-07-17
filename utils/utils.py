@@ -427,6 +427,10 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 #
 #     return output
 
+def common_entries(*dcts):
+    for i in set(dcts[0]).intersection(*dcts[1:]):
+        yield (i,) + tuple(d[i] for d in dcts)
+
 def plot_images(imgs, targets, fname='images.jpg'):
     # Plots training images overlaid with targets
     imgs = imgs.cpu().numpy()
