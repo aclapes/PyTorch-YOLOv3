@@ -90,13 +90,13 @@ def create_modules(hyperparams, sx_module_defs):
     """
     # hyperparams = module_defs.pop(0)
 
-    if not 'input_streams' in hyperparams:
-        hyperparams['input_streams'] = '0'
+    if not 'streams' in hyperparams:
+        hyperparams['streams'] = '0'
 
     sx_output_filters = OrderedDict()
     sx_module_lists = OrderedDict()
     for sx, _ in sx_module_defs.items():
-        sx_output_filters[sx] = [int(hyperparams['channels'])] if sx in hyperparams['input_streams'] else []  # TODO: make variable nb of channels in each stream
+        sx_output_filters[sx] = [int(hyperparams['channels'])] if sx in hyperparams['streams'] else []  # TODO: make variable nb of channels in each stream
         sx_module_lists[sx] = []
     yolo_index = -1
 
@@ -459,7 +459,7 @@ class Darknet(nn.Module):
         # create an actual nn.ModuleList (so it registers model parameters, so optimizer "sees" them)
         self.module_list = nn.ModuleList([m for _, sublist in self.sx_module_lists.items() for m in sublist])
 
-        hyp['input_streams'] = hyp['input_streams'].split(',') if 'input_streams' in hyp else ['0']
+        hyp['streams'] = hyp['streams'].split(',') if 'streams' in hyp else ['0']
         self.hyperparams = hyp
 
 
@@ -469,7 +469,7 @@ class Darknet(nn.Module):
         yolo_outputs = []
         layer_outputs = {sx: [] for sx in self.sx_module_lists.keys()}
 
-        x = {sx: (x0[i] if sx in self.hyperparams['input_streams'] else None)
+        x = {sx: (x0[i] if sx in self.hyperparams['streams'] else None)
              for i, sx in enumerate(self.sx_module_defs.keys())}
 
         for sx, defs_sx in self.sx_module_defs.items():
@@ -503,7 +503,7 @@ class Darknet(nn.Module):
 
         return yolo_outputs if targets is None else (loss, yolo_outputs)
 
-    def load_darknet_weights(self, weights_path, k=0, cutoff=-1):
+    def load_darknet_weights(self, weights_path, k=0, cutoff=-1, initial_freeze=True):
         """Parses and loads the weights stored in 'weights_path'"""
 
         # Open the weiheader[-1]coghts file
@@ -511,7 +511,7 @@ class Darknet(nn.Module):
             header = np.fromfile(f, dtype=np.int32, count=(5+1))  # First five are header values
             self.header_info = header[:-1]  # Needed to write header when saving weights
             self.seen = header[3]  # number of images seen during training
-            self.header_len_streams = np.fromfile(f, dtype=np.int32, count=header[-1])
+            self.lengths_sx = np.fromfile(f, dtype=np.int32, count=header[-1])
             weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
 
         # Establish cutoff for loading backbone weights
@@ -524,14 +524,13 @@ class Darknet(nn.Module):
         c = 0
         ptr = 0
 
-        sx = self.hyperparams['input_streams'][k]
+        sx = self.hyperparams['streams'][k]
         defs_sx = self.sx_module_defs[sx]
         modules_sx = self.sx_module_lists[sx]
 
         for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff], modules_sx[:cutoff])):
             if module_def["type"] == "convolutional":
                 conv_layer = module[0]
-                print(f"{sx,i,c}")
                 c += 1
                 if module_def["batch_normalize"]:
                     # Load BN bias, weights, running mean and running variance
@@ -565,7 +564,12 @@ class Darknet(nn.Module):
                 conv_layer.weight.data.copy_(conv_w)
                 ptr += num_w
 
-    def save_darknet_weights(self, path, cutoff=None):
+                if initial_freeze:
+                    for p in module.parameters():
+                        p.requires_grad = False
+
+
+    def save_darknet_weights(self, path, cutoff=None, save_root=True):
         """
             @:param path    - path of the new weights file
             @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
@@ -581,36 +585,40 @@ class Darknet(nn.Module):
         else:
             raise AttributeError
 
+        nb_streams = 0
         conv_modules = []
         for sx, modules_sx in self.sx_module_defs.items():
-            cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
-                           if cutoff[sx] == -1 or i < cutoff[sx]]
-            conv_modules += [np.sum(cutoff_list)]
+            if save_root or sx != '0':
+                cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
+                               if cutoff[sx] == -1 or i < cutoff[sx]]
+                conv_modules += [np.sum(cutoff_list)]
+                nb_streams += 1
 
-        self.header_len_streams = np.array([len(self.sx_module_defs)] + conv_modules, dtype=np.int32)
+        self.lengths_sx = np.array([nb_streams] + conv_modules, dtype=np.int32)
         self.header_info[3] = self.seen
 
         fp = open(path, "wb")
-        np.concatenate([self.header_info, self.header_len_streams]).tofile(fp)
+        np.concatenate([self.header_info, self.lengths_sx]).tofile(fp)
 
         # Iterate through layers
         for sx, defs_sx in self.sx_module_defs.items():
-            modules_sx = self.sx_module_lists[sx]
-            for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
-                if module_def["type"] == "convolutional":
-                    conv_layer = module[0]
-                    # If batch norm, load bn first
-                    if module_def["batch_normalize"]:
-                        bn_layer = module[1]
-                        bn_layer.bias.data.cpu().numpy().tofile(fp)
-                        bn_layer.weight.data.cpu().numpy().tofile(fp)
-                        bn_layer.running_mean.data.cpu().numpy().tofile(fp)
-                        bn_layer.running_var.data.cpu().numpy().tofile(fp)
-                    # Load conv bias
-                    else:
-                        conv_layer.bias.data.cpu().numpy().tofile(fp)
-                    # Load conv weights
-                    conv_layer.weight.data.cpu().numpy().tofile(fp)
+            if save_root or sx != '0':
+                modules_sx = self.sx_module_lists[sx]
+                for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
+                    if module_def["type"] == "convolutional":
+                        conv_layer = module[0]
+                        # If batch norm, load bn first
+                        if module_def["batch_normalize"]:
+                            bn_layer = module[1]
+                            bn_layer.bias.data.cpu().numpy().tofile(fp)
+                            bn_layer.weight.data.cpu().numpy().tofile(fp)
+                            bn_layer.running_mean.data.cpu().numpy().tofile(fp)
+                            bn_layer.running_var.data.cpu().numpy().tofile(fp)
+                        # Load conv bias
+                        else:
+                            conv_layer.bias.data.cpu().numpy().tofile(fp)
+                        # Load conv weights
+                        conv_layer.weight.data.cpu().numpy().tofile(fp)
 
         fp.close()
 

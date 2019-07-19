@@ -46,6 +46,7 @@ if __name__ == "__main__":
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
+    parser.add_argument("--freeze_loaded_weights", default=1, help="when to rescale images for multi-scale training")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -73,6 +74,7 @@ if __name__ == "__main__":
     # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
 
     # If specified we start from checkpoint
+    pretrained_names = None
     st_epoch = 0
     if opt.pretrained_weights:
         weights = [w for w in opt.pretrained_weights.split(',')]
@@ -85,7 +87,7 @@ if __name__ == "__main__":
             del chkpt
         else:
             for k, w in enumerate(weights):
-                model.load_darknet_weights(w, k=k, cutoff=15)
+                pretrained_names = model.load_darknet_weights(w, k=k, cutoff=-1)
                 # Remove old results
                 debug_images = os.path.join(opt.output, '*_batch*.jpg')
                 for f in glob.glob(debug_images) + glob.glob(results_file):
@@ -150,10 +152,17 @@ if __name__ == "__main__":
 
     best_mAP = .0
 
+    for name, p in model.named_parameters():
+        print(f'{name}, {p}')
+
     for epoch in range(st_epoch, opt.epochs):
 
         model.train()
         # scheduler.step()
+
+        if epoch == opt.freeze_loaded_weights:
+            for name, p in model.named_parameters():
+                p.requires_grad = True
 
         start_time = time.time()
         # loss_bat  ches_tr = []
