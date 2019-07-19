@@ -46,6 +46,8 @@ if __name__ == "__main__":
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
+    parser.add_argument("--unfreeze_at_epoch", default=0, help="epoch number to unfreeze loaded pretrained weights: "
+                                                               "never (-1), first epoch (0), or after some epochs (> 0).")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -73,21 +75,24 @@ if __name__ == "__main__":
     # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
 
     # If specified we start from checkpoint
+    pretrained_names = None
     st_epoch = 0
     if opt.pretrained_weights:
-        if opt.pretrained_weights.endswith(".pth"):
-            chkpt = torch.load(opt.pretrained_weights, map_location=device)  # load checkpoint
+        weights = [w for w in opt.pretrained_weights.split(',')]
+        if len(weights) == 1 and weights[0].endswith('.pth'):
+            chkpt = torch.load(weights[0], map_location=device)  # load checkpoint
             model.load_state_dict(chkpt['model'])
             st_epoch = chkpt['epoch'] + 1
             if chkpt['optimizer'] is not None:
                 optimizer.load_state_dict(chkpt['optimizer'])
             del chkpt
         else:
-            # model.load_darknet_weights(opt.pretrained_weights)  # TODO: fix
-            # Remove old results
-            debug_images = os.path.join(opt.output, '*_batch*.jpg')
-            for f in glob.glob(debug_images) + glob.glob(results_file):
-                os.remove(f)
+            for k, w in enumerate(weights):
+                pretrained_names = model.load_darknet_weights(w, k=k, cutoff=-1)
+                # Remove old results
+                debug_images = os.path.join(opt.output, '*_batch*.jpg')
+                for f in glob.glob(debug_images) + glob.glob(results_file):
+                    os.remove(f)
 
     datasets = [ListDataset(cfg["train"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
                 for cfg in data_configs]
@@ -148,10 +153,17 @@ if __name__ == "__main__":
 
     best_mAP = .0
 
+    for name, p in model.named_parameters():
+        print(f'{name}, {p}')
+
     for epoch in range(st_epoch, opt.epochs):
 
         model.train()
         # scheduler.step()
+
+        if epoch == opt.freeze_loaded_weights:
+            for name, p in model.named_parameters():
+                p.requires_grad = True
 
         start_time = time.time()
         # loss_bat  ches_tr = []
