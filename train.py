@@ -46,7 +46,8 @@ if __name__ == "__main__":
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
-    parser.add_argument("--freeze_loaded_weights", default=1, help="when to rescale images for multi-scale training")
+    parser.add_argument("--unfreeze_at_epoch", default=0, help="epoch number to unfreeze loaded pretrained weights: "
+                                                               "never (-1), first epoch (0), or after some epochs (> 0).")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
