@@ -164,7 +164,9 @@ if __name__ == "__main__":
 
         start_time = time.time()
         # loss_bat  ches_tr = []
-        mloss = 0.
+        mloss = torch.zeros(5).to(device)
+        print(('\n%8s%12s' + '%10s' * 7) %
+              ('Epoch', 'mem', 'xy', 'wh', 'conf', 'cls', 'tr_loss', 'targets', 'img_size'))
         pbar = tqdm(enumerate(dataloader), total=nb)  # progress bar
         for batch_i, (batch_data, img_size) in pbar:
             batches_done = len(dataloader) * epoch + batch_i
@@ -185,7 +187,7 @@ if __name__ == "__main__":
             #     for pg in optimizer.param_groups:
             #         pg['lr'] = lr
 
-            loss, outputs = model(imgs, targets)
+            loss, loss_items, outputs = model(imgs, targets)
             loss.backward()
 
             if batches_done % opt.gradient_accumulations:
@@ -231,10 +233,10 @@ if __name__ == "__main__":
             model.seen += imgs[0].size(0)
             # loss_batches_tr += [loss.item()]
 
-            mloss = (mloss * batch_i + loss.item()) / (batch_i + 1)  # update mean losses
-
-            s = ('%8s%12s' + '%10.3g' * 3) % (
-                '%g/%g' % (epoch, opt.epochs - 1), '%g/%g' % (batch_i, nb - 1), mloss, len(targets), img_size)
+            mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
+            mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0
+            s = ('%10s' * 2 + '%10.3g' * 7) % (
+                '%g/%g' % (epoch, opt.epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
             pbar.set_description(s)
 
         if epoch % opt.evaluation_interval == 0:

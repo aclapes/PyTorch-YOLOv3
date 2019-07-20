@@ -190,11 +190,8 @@ class ListDataset(Dataset):
             labels_xyxy[:, 3] = x2
             labels_xyxy[:, 4] = y2
 
-        if self.augment:
-            # if Maff is None:
-            #     Maff = get_affine_transformation(img.shape, degrees=(-5, 5), translate=(0.10, 0.10), scale=(0.90, 1.10), border=0)
-            if Maff:
-                img, labels_xyxy = apply_affine(img, Maff, labels_xyxy, border=0)
+        if self.augment and Maff is not None:
+            img, labels_xyxy = apply_affine(img, Maff, labels_xyxy, border=0)
 
         nl = len(labels_xyxy)
         if nl:

@@ -315,7 +315,9 @@ class YOLOLayer(nn.Module):
                 "grid_size": grid_size,
             }
 
-        return output, total_loss
+        loss_xy = loss_x + loss_y
+        loss_wh = loss_w + loss_h
+        return output, total_loss, torch.stack((loss_xy, loss_wh, loss_conf, loss_cls, total_loss)).detach()
 
 # class Darknet(nn.Module):
 #     """YOLOv3 object detection model"""
@@ -482,6 +484,7 @@ class Darknet(nn.Module):
     def forward(self, x0, targets=None):
         img_dim = max(x0[0].shape[-2:])
         loss = 0
+        loss_items = None
         yolos = dict()
         layer_outputs = {sx: [] for sx in self.sx_module_lists.keys()}
 
@@ -511,8 +514,9 @@ class Darknet(nn.Module):
                     layer_i = int(module_def["from"])
                     x[sx] = layer_outputs[sx][-1] + layer_outputs[sx][layer_i]
                 elif module_def["type"] == "yolo":
-                    x[sx], layer_loss = module[0](x[sx], targets, img_dim)
+                    x[sx], layer_loss, layer_loss_items = module[0](x[sx], targets, img_dim)
                     loss += layer_loss
+                    loss_items = (layer_loss_items if loss_items is None else (loss_items + layer_loss_items))
                     yolos[sx].append(x[sx])
                 layer_outputs[sx].append(x[sx])
 
@@ -526,7 +530,7 @@ class Darknet(nn.Module):
         # for sx, yolos_sx in yolos.items():
         #     yolo_outputs += [to_cpu(torch.cat(yolos_sx, 1))]
 
-        return yolo_outputs if targets is None else (loss, yolo_outputs)
+        return yolo_outputs if targets is None else (loss, loss_items, yolo_outputs)
 
     def load_darknet_weights(self, weights_path, k=0, cutoff=-1, initial_freeze=True):
         """Parses and loads the weights stored in 'weights_path'"""
