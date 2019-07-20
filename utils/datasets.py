@@ -134,9 +134,9 @@ class ListDataset(Dataset):
         if self.augment:
             flip_lr = random.random() > 0.5
             Maff = get_affine_transformation(img.shape,
-                                             degrees=(-5, 5),
-                                             translate=(0.10, 0.10),
-                                             scale=(0.90, 1.10),
+                                             degrees=(-15, 15), #degrees=(-5, 5),
+                                             translate=(0.50, 0.50), #translate=(0.10, 0.10),
+                                             scale=(0.50, 1.50), #scale=(0.90, 1.10),
                                              border=0)
 
         return (img_path,) + self.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)
@@ -315,9 +315,9 @@ class ParallelDataset(Dataset):
             img_path, img, label_path = dset.retrieve(index)
             if self.augment and Maff is None:
                 Maff = get_affine_transformation(img.shape,
-                                                 degrees=(-5, 5),
-                                                 translate=(0.10, 0.10),
-                                                 scale=(0.90, 1.10),
+                                                 degrees=(-15, 15), #degrees=(-5, 5),
+                                                 translate=(0.50, 0.50),
+                                                 scale=(0.50, 1.50), #scale=(0.90, 1.10),
                                                  border=0)
             items += [(img_path,) + dset.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)]
 

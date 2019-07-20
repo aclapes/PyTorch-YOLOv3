@@ -41,12 +41,12 @@ if __name__ == "__main__":
     parser.add_argument("--pretrained_weights", type=str, help="if specified starts from checkpoint model")
     parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
-    parser.add_argument("--checkpoint_interval", type=int, default=10, help="interval between saving model weights")
+    parser.add_argument("--checkpoint_interval", type=int, help="interval between saving model weights")
     parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
-    parser.add_argument("--unfreeze_at_epoch", type=int, default=-1, help="epoch number to unfreeze loaded pretrained weights: "
+    parser.add_argument("--unfreeze_at_epoch", type=int, default=1, help="epoch number to unfreeze loaded pretrained weights: "
                                                                "never (-1), first epoch (0), or after some epochs (> 0).")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
@@ -92,7 +92,7 @@ if __name__ == "__main__":
                 _ = model.load_darknet_weights(w, k=k, cutoff=-1)
                 # Remove old results
 
-    if clean_results:
+    if clean_results and not opt.nosave:
         debug_images = os.path.join(opt.output, '*_batch*.jpg')
         for f in glob.glob(debug_images) + glob.glob(results_file):
             os.remove(f)
@@ -180,9 +180,10 @@ if __name__ == "__main__":
             targets = Variable(targets[0].to(device), requires_grad=False)
 
             # Plot images with bounding boxes
-            # if epoch == 0 and batch_i == 0:
-            #     plot_images(imgs=imgs, targets=targets,
-            #                 fname=os.path.join(opt.output, 'train_batch-%g.jpg') % batch_i)
+            if epoch == 0 and batch_i == 0 and not opt.nosave:
+                for k, imgs_k in enumerate(imgs):
+                    plot_images(imgs=imgs_k, targets=targets,
+                                fname=os.path.join(opt.output, 'train_batch-%g.%g.jpg') % (batch_i, k))
 
             # SGD burn-in
             # if epoch == 0 and batch_i <= n_burnin:
@@ -282,8 +283,9 @@ if __name__ == "__main__":
             #     '%g/%g' % (epoch, epochs - 1), '%g/%g' % (i, nb - 1), *mloss, len(targets), img_size)
 
             # Write epoch results
-            with open(results_file, 'a') as file:
-                file.write(s + '%11.3g' * 5 % tuple([x for _, x in evaluation_metrics]) + '\n')
+            if not opt.nosave:
+                with open(results_file, 'a') as file:
+                    file.write(s + '%11.3g' * 5 % tuple([x for _, x in evaluation_metrics]) + '\n')
 
         # Save training results
         save = (not opt.nosave) or (epoch == opt.epochs - 1)
@@ -301,7 +303,7 @@ if __name__ == "__main__":
                 torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_best.pth")
 
             # periodic saving, every opt.checkpoint_interval
-            if epoch % opt.checkpoint_interval == 0:
+            if opt.checkpoint_interval and epoch % opt.checkpoint_interval == 0:
                 torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_%d.pth" % epoch)
 
             # Delete checkpoint

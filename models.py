@@ -535,20 +535,25 @@ class Darknet(nn.Module):
     def load_darknet_weights(self, weights_path, k=0, cutoff=-1, initial_freeze=True):
         """Parses and loads the weights stored in 'weights_path'"""
 
-        # Open the weiheader[-1]coghts file
-        with open(weights_path, "rb") as f:
-            header = np.fromfile(f, dtype=np.int32, count=(5+1))  # First five are header values
-            self.header_info = header[:-1]  # Needed to write header when saving weights
-            self.seen = header[3]  # number of images seen during training
-            self.lengths_sx = np.fromfile(f, dtype=np.int32, count=header[-1])
-            weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
+        if 'yolov3-tiny.conv.15' in weights_path:
+            cutoff = 9
+            # Open the weiheader[-1]coghts file
+            with open(weights_path, "rb") as f:
+                self.header_info = np.fromfile(f, dtype=np.int32, count=5)  # First five are header values
+                weights = np.fromfile(f, dtype=np.float32)  # The rest are weights
+        else:
+            # This code's weight file structures
+            with open(weights_path, "rb") as f:
+                header = np.fromfile(f, dtype=np.int32, count=(5+1))
+                self.header_info = header[:-1]  # Needed to write header when saving weights
+                self.seen = header[3]  # number of images seen during training
+                self.lengths_sx = np.fromfile(f, dtype=np.int32, count=header[-1])
+                weights = np.fromfile(f, dtype=np.float32)
 
         # Establish cutoff for loading backbone weights
         # cutoff = None
         # if "darknet53.conv.74" in weights_path:
         #     cutoff = 75  # TODO: adjust number to layers that need initialization, not all of them
-        # elif 'yolov3-tiny.conv.15' in weights_path:
-        #     cutoff = 9
 
         c = 0
         ptr = 0
@@ -557,7 +562,9 @@ class Darknet(nn.Module):
         defs_sx = self.sx_module_defs[sx]
         modules_sx = self.sx_module_lists[sx]
 
-        for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff], modules_sx[:cutoff])):
+        for i, (module_def, module) in enumerate(zip(defs_sx, modules_sx)):
+            if c == cutoff:
+                break
             if module_def["type"] == "convolutional":
                 conv_layer = module[0]
                 c += 1
