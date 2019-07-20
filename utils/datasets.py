@@ -128,7 +128,18 @@ class ListDataset(Dataset):
 
     def __getitem__(self, index):
         img_path, img, label_path = self.retrieve(index)
-        return (img_path,) + self.preprocess(img, label_path)
+
+        flip_lr = False
+        Maff = None
+        if self.augment:
+            flip_lr = random.random() > 0.5
+            Maff = get_affine_transformation(img.shape,
+                                             degrees=(-5, 5),
+                                             translate=(0.10, 0.10),
+                                             scale=(0.90, 1.10),
+                                             border=0)
+
+        return (img_path,) + self.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)
 
     def load_image(self, img_path):
         return cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
@@ -180,10 +191,10 @@ class ListDataset(Dataset):
             labels_xyxy[:, 4] = y2
 
         if self.augment:
-            if Maff is None:
-                Maff = get_affine_transformation(img.shape, degrees=(-5, 5), translate=(0.10, 0.10), scale=(0.90, 1.10), border=0)
-
-            img, labels_xyxy = apply_affine(img, Maff, labels_xyxy, border=0)
+            # if Maff is None:
+            #     Maff = get_affine_transformation(img.shape, degrees=(-5, 5), translate=(0.10, 0.10), scale=(0.90, 1.10), border=0)
+            if Maff:
+                img, labels_xyxy = apply_affine(img, Maff, labels_xyxy, border=0)
 
         nl = len(labels_xyxy)
         if nl:
@@ -194,7 +205,7 @@ class ListDataset(Dataset):
             labels_xywh[:, 4] = (labels_xyxy[:, 4] - labels_xyxy[:, 2]) / padded_h
 
         if self.augment:
-            if flip_lr or (flip_lr is None and random.random() > 0.5):
+            if flip_lr:
                 img = np.fliplr(img)
                 if nl:
                     labels_xywh[:, 1] = 1 - labels_xywh[:, 1]
@@ -297,7 +308,7 @@ class ParallelDataset(Dataset):
         :return:
         '''
         # data augmentation's stochastic parameters that require consistency between datasets
-        flip_lr = None
+        flip_lr = False
         if self.augment:
             flip_lr = random.random() > 0.5
 

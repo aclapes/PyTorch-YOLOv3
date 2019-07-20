@@ -46,7 +46,7 @@ if __name__ == "__main__":
     parser.add_argument("--compute_map", default=False, help="if True computes mAP every tenth batch")
     parser.add_argument("--multiscale_training", default=True, help="allow for multi-scale training")
     parser.add_argument("--rescale_every_n_batches", default=16, help="when to rescale images for multi-scale training")
-    parser.add_argument("--unfreeze_at_epoch", default=0, help="epoch number to unfreeze loaded pretrained weights: "
+    parser.add_argument("--unfreeze_at_epoch", type=int, default=-1, help="epoch number to unfreeze loaded pretrained weights: "
                                                                "never (-1), first epoch (0), or after some epochs (> 0).")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
@@ -153,15 +153,12 @@ if __name__ == "__main__":
 
     best_mAP = .0
 
-    for name, p in model.named_parameters():
-        print(f'{name}, {p}')
-
     for epoch in range(st_epoch, opt.epochs):
 
         model.train()
         # scheduler.step()
 
-        if epoch == opt.freeze_loaded_weights:
+        if epoch == opt.unfreeze_at_epoch:
             for name, p in model.named_parameters():
                 p.requires_grad = True
 

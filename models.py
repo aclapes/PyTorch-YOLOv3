@@ -435,6 +435,17 @@ class YOLOLayer(nn.Module):
 #
 #         fp.close()
 
+# def get_yolo_layers(model):
+#     '''
+#     List YOLO layers in stream 0.
+#     Question: can I have yolo layers in different streams. if so, make changes here (TODO).
+#     :param model:
+#     :return:
+#     '''
+#     a = [module_def['type'] == 'yolo' for module_def in model.sx_module_defs['0']]
+#     return [i for i, x in enumerate(a) if x]  # [82, 94, 106] for yolov3
+
+
 def get_yolo_layers(model):
     '''
     List YOLO layers in stream 0.
@@ -442,8 +453,13 @@ def get_yolo_layers(model):
     :param model:
     :return:
     '''
-    a = [module_def['type'] == 'yolo' for module_def in model.sx_module_defs['0']]
-    return [i for i, x in enumerate(a) if x]  # [82, 94, 106] for yolov3
+
+    yolo_indices = dict()
+    for sx, defs_sx in model.sx_module_defs.items():
+        yolo_layers = [module_def['type'] == 'yolo' for module_def in defs_sx]
+        yolo_indices[sx] = [i for i, x in enumerate(yolo_layers) if x]  # [82, 94, 106] for yolov3
+
+    return yolo_indices
 
 class Darknet(nn.Module):
     """YOLOv3 object detection model"""
@@ -466,7 +482,7 @@ class Darknet(nn.Module):
     def forward(self, x0, targets=None):
         img_dim = max(x0[0].shape[-2:])
         loss = 0
-        yolo_outputs = []
+        yolos = dict()
         layer_outputs = {sx: [] for sx in self.sx_module_lists.keys()}
 
         x = {sx: (x0[i] if sx in self.hyperparams['streams'] else None)
@@ -474,6 +490,7 @@ class Darknet(nn.Module):
 
         for sx, defs_sx in self.sx_module_defs.items():
             modules_sx = self.sx_module_lists[sx]
+            yolos[sx] = []
             for i, (module_def, module) in enumerate(zip(defs_sx, modules_sx)):
                 if module_def["type"] in ["convolutional", "upsample", "maxpool", "dropout"]:
                     x[sx] = module(x[sx])
@@ -496,10 +513,18 @@ class Darknet(nn.Module):
                 elif module_def["type"] == "yolo":
                     x[sx], layer_loss = module[0](x[sx], targets, img_dim)
                     loss += layer_loss
-                    yolo_outputs.append(x[sx])
+                    yolos[sx].append(x[sx])
                 layer_outputs[sx].append(x[sx])
 
+        yolo_outputs = []
+        for _, yolos_sx in yolos.items():
+            # yolo_outputs += [torch.stack(yolos_sx).sum(dim=0) / len(yolos_sx)]
+            yolo_outputs += yolos_sx
         yolo_outputs = to_cpu(torch.cat(yolo_outputs, 1))
+
+        # yolo_outputs = []
+        # for sx, yolos_sx in yolos.items():
+        #     yolo_outputs += [to_cpu(torch.cat(yolos_sx, 1))]
 
         return yolo_outputs if targets is None else (loss, yolo_outputs)
 
@@ -569,14 +594,14 @@ class Darknet(nn.Module):
                         p.requires_grad = False
 
 
-    def save_darknet_weights(self, path, cutoff=None, save_root=True):
+    def save_darknet_weights(self, path, cutoff=None, ff=False): #, discard_root=False):
         """
             @:param path    - path of the new weights file
             @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
         """
 
         # cutoff needs to be: (a) a scalar, (b) a dict, or (c) None.
-        if not hasattr(cutoff, '__len__'):  # if a scalar
+        if cutoff is not None and not hasattr(cutoff, '__len__'):  # if a scalar
             cutoff = {'0': cutoff}
         elif isinstance(cutoff, dict):
             assert len(cutoff) == len(self.sx_module_defs)  # error check
@@ -585,45 +610,53 @@ class Darknet(nn.Module):
         else:
             raise AttributeError
 
-        nb_streams = 0
         conv_modules = []
         for sx, modules_sx in self.sx_module_defs.items():
-            if save_root or sx != '0':
-                cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
-                               if cutoff[sx] == -1 or i < cutoff[sx]]
+            cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
+                           if cutoff[sx] == -1 or i < cutoff[sx]]
+            if sx != '0':
                 conv_modules += [np.sum(cutoff_list)]
-                nb_streams += 1
+            elif not ff:
+                conv_modules += [np.sum(cutoff_list)]
+            else: # ff
+                conv_modules[-1] += np.sum(cutoff_list)
 
-        self.lengths_sx = np.array([nb_streams] + conv_modules, dtype=np.int32)
+        self.lengths_sx = np.array([len(conv_modules)] + conv_modules, dtype=np.int32)
         self.header_info[3] = self.seen
 
         fp = open(path, "wb")
         np.concatenate([self.header_info, self.lengths_sx]).tofile(fp)
 
         # Iterate through layers
+        root_defs, root_module_list = [], []
+        if ff and '0' in self.sx_module_lists:
+            root_defs, root_module_list = self.sx_module_defs['0'], self.sx_module_lists['0']
+            del self.sx_module_defs['0']
+            del self.sx_module_lists['0']
+
         for sx, defs_sx in self.sx_module_defs.items():
-            if save_root or sx != '0':
-                modules_sx = self.sx_module_lists[sx]
-                for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
-                    if module_def["type"] == "convolutional":
-                        conv_layer = module[0]
-                        # If batch norm, load bn first
-                        if module_def["batch_normalize"]:
-                            bn_layer = module[1]
-                            bn_layer.bias.data.cpu().numpy().tofile(fp)
-                            bn_layer.weight.data.cpu().numpy().tofile(fp)
-                            bn_layer.running_mean.data.cpu().numpy().tofile(fp)
-                            bn_layer.running_var.data.cpu().numpy().tofile(fp)
-                        # Load conv bias
-                        else:
-                            conv_layer.bias.data.cpu().numpy().tofile(fp)
-                        # Load conv weights
-                        conv_layer.weight.data.cpu().numpy().tofile(fp)
+            defs_sx = self.sx_module_defs[sx] + root_defs if sx != '0' else self.sx_module_defs[sx]
+            modules_sx = self.sx_module_lists[sx] + root_module_list if sx != '0' else self.sx_module_lists[sx]
+            for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
+                if module_def["type"] == "convolutional":
+                    conv_layer = module[0]
+                    # If batch norm, load bn first
+                    if module_def["batch_normalize"]:
+                        bn_layer = module[1]
+                        bn_layer.bias.data.cpu().numpy().tofile(fp)
+                        bn_layer.weight.data.cpu().numpy().tofile(fp)
+                        bn_layer.running_mean.data.cpu().numpy().tofile(fp)
+                        bn_layer.running_var.data.cpu().numpy().tofile(fp)
+                    # Load conv bias
+                    else:
+                        conv_layer.bias.data.cpu().numpy().tofile(fp)
+                    # Load conv weights
+                    conv_layer.weight.data.cpu().numpy().tofile(fp)
 
         fp.close()
 
 
-def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
+def convert(cfg, input_weights, output_weights=None, cutoff=None, ff=False):
     # Converts between PyTorch and Darknet format per extension (i.e. *.weights convert to *.pt and vice versa)
     # from models import *; convert('cfg/yolov3-spp.cfg', 'weights/yolov3-spp.weights')
 
@@ -631,16 +664,26 @@ def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
     model = Darknet(cfg)
 
     # Load weights and save
-    if weights.endswith('.pth') or weights.endswith('.pt'):  # if PyTorch format
-        model.load_state_dict(torch.load(weights, map_location='cpu')['model'])
-        model.save_darknet_weights('converted.weights', cutoff=-1)
-        print("Success: converted '%s' to 'converted.weights'" % weights)
+    if input_weights.endswith('.pth') or input_weights.endswith('.pt'):  # if PyTorch format
+        if output_weights:
+            assert output_weights.endswith('.weights')
+        else:
+            output_weights = 'converted.weights'
 
-    elif weights.endswith('.weights'):  # darknet format
-        _ = model.load_darknet_weights(weights)
+        model.load_state_dict(torch.load(input_weights, map_location='cpu')['model'])
+        model.save_darknet_weights(output_weights, cutoff=cutoff, ff=ff)
+        print("Success: converted '%s' to '%s'" % (input_weights, output_weights))
+
+    elif input_weights.endswith('.weights'):  # darknet format
+        if output_weights:
+            assert output_weights.endswith('.pth') or output_weights.endswith('.pt')
+        else:
+            output_weights = 'converted.pth'
+
+        _ = model.load_darknet_weights(input_weights)
         chkpt = {'epoch': -1, 'best_loss': None, 'model': model.state_dict(), 'optimizer': None}
-        torch.save(chkpt, 'converted.pt')
-        print("Success: converted '%s' to 'converted.pt'" % weights)
+        torch.save(chkpt, output_weights)
+        print("Success: converted '%s' to '%s'" % (input_weights, output_weights))
 
     else:
         print('Error: extension not supported.')
@@ -649,9 +692,11 @@ def convert(cfg='cfg/yolov3-spp.cfg', weights='weights/yolov3-spp.weights'):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_def", type=str, default="config/yolov3-1cls-dropout-supertiny.cfg", help="path to model definition file")
-    parser.add_argument("--weights", type=str, help="if specified starts from checkpoint model")
+    parser.add_argument("--input_weights", type=str, help="if specified starts from checkpoint model")
+    parser.add_argument("--output_weights", type=str, help="if specified starts from checkpoint model")
+    parser.add_argument("--ff", action='store_true', help="Discard (or keep) the 0-th stream (root) weights")
     opt = parser.parse_args()
     print(opt)
 
-    convert(opt.model_def, opt.weights)
+    convert(opt.model_def, opt.input_weights, opt.output_weights) #, discard_root=opt.discard_root)
 
