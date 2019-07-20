@@ -42,7 +42,7 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
 
     labels = []
     sample_metrics = []  # List of tuples (TP, confs, pred)
-    loss_batches_eval = []
+    loss_batches = []
     # for batch_i, (_, imgs, targets, _) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
     for batch_i, (batch_data, img_size) in enumerate(tqdm.tqdm(dataloader, desc="Detecting objects")):
         paths, imgs, targets = list(zip(*batch_data))
@@ -67,13 +67,14 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
         targets[:, 2:] *= img_size
 
         sample_metrics += get_batch_statistics(outputs, targets.cpu(), iou_threshold=iou_thres)
-        loss_batches_eval += [loss.item()]
+        loss_batches += [loss.item()]
 
     # Concatenate sample statistics
     true_positives, pred_scores, pred_labels = [np.concatenate(x, 0) for x in list(zip(*sample_metrics))]
     precision, recall, AP, f1, ap_class = ap_per_class(true_positives, pred_scores, pred_labels, labels)
+    eval_loss = Tensor(loss_batches).mean().cpu().numpy()
 
-    return loss_batches_eval, precision, recall, AP, f1, ap_class
+    return eval_loss, (precision, recall, AP, f1, ap_class)
 
 
 if __name__ == "__main__":

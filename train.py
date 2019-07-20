@@ -39,7 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_def", type=str, default="config/yolov3-1cls-tiny.cfg", help="path to model definition file")
     parser.add_argument("--data_config", type=str, default="config/senior2bbb_depth-post_0_0.85.data", help="path to data config file")
     parser.add_argument("--pretrained_weights", type=str, help="if specified starts from checkpoint model")
-    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--n_cpu", type=int, default=4, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
     parser.add_argument("--checkpoint_interval", type=int, help="interval between saving model weights")
     parser.add_argument("--evaluation_interval", type=int, default=1, help="interval evaluations on validation set")
@@ -50,6 +50,8 @@ if __name__ == "__main__":
                                                                "never (-1), first epoch (0), or after some epochs (> 0).")
     parser.add_argument("--checkpoints", type=str, default="checkpoints/", help="directory where to save checkpoints")
     parser.add_argument("--output", type=str, default="output/", help="directory where to save output")
+    parser.add_argument("--metric_for_best", type=str, default="val_mAP", help="criterion for choosing best model")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Initial learning rate")
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
     opt = parser.parse_args()
     print(opt)
@@ -71,7 +73,7 @@ if __name__ == "__main__":
     model = Darknet(opt.model_def).to(device)
     model.apply(weights_init_normal)
 
-    optimizer = torch.optim.Adam(model.parameters())
+    optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
     # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
 
     # If specified we start from checkpoint
@@ -154,9 +156,7 @@ if __name__ == "__main__":
     nb = len(dataloader)
     n_burnin = min(round(nb / 5 + 1), 1000)  # burn-in batches
 
-    best_mAP = .0
-
-    for epoch in range(st_epoch, opt.epochs):
+    for epoch in range(st_epoch, st_epoch + opt.epochs):
 
         model.train()
         # scheduler.step()
@@ -240,13 +240,15 @@ if __name__ == "__main__":
             mloss = (mloss * batch_i + loss_items) / (batch_i + 1)  # update mean losses
             mem = torch.cuda.memory_cached() / 1E9 if torch.cuda.is_available() else 0
             s = ('%10s' * 2 + '%10.3g' * 7) % (
-                '%g/%g' % (epoch, opt.epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
+                '%g/%g' % (epoch, st_epoch + opt.epochs - 1), '%.3gG' % mem, *mloss, len(targets), img_size)
             pbar.set_description(s)
+
+        precision = recall = AP = f1 = val_loss = 0
 
         if epoch % opt.evaluation_interval == 0:
             print("\n---- Evaluating Model ----")
             # Evaluate the model on the validation set
-            loss_batches_eval, precision, recall, AP, f1, ap_class = evaluate(
+            eval_losses, results = evaluate(
                 model,
                 data_configs,
                 opt.output,
@@ -258,15 +260,13 @@ if __name__ == "__main__":
                 batch_size=8,
                 num_workers=8
             )
-            evaluation_metrics = [
-                ("val_precision", precision.mean()),
-                ("val_recall", recall.mean()),
-                ("val_mAP", AP.mean()),
-                ("val_f1", f1.mean()),
-                ("val_loss", np.mean(loss_batches_eval))
-            ]
 
-            logger.list_of_scalars_summary(evaluation_metrics, epoch)
+            metric_names = ["val_precision", "val_recall", "val_mAP", "val_f1", "val_loss"]
+            eval_metrics = {m: r.mean() for m, r in zip(metric_names, results[:-1] + (eval_losses,))}
+
+            # logger.list_of_scalars_summary(eval_metrics, epoch)
+
+            ap_class = results[-1]  # in 1-class problem: ap_class[0] == val_mAP
 
             # summary_table = [['#epoch'] + [metric_name for metric_name, _ in evaluation_metrics]]
             # summary_table += [['%d/%d' % (epoch+1, opt.epochs)] + ["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
@@ -285,12 +285,14 @@ if __name__ == "__main__":
             # Write epoch results
             if not opt.nosave:
                 with open(results_file, 'a') as file:
-                    file.write(s + '%11.3g' * 5 % tuple([x for _, x in evaluation_metrics]) + '\n')
+                    file.write(s + '%11.3g' * 5 % tuple([eval_metrics[m] for m in metric_names]) + '\n')
 
         # Save training results
         save = (not opt.nosave) or (epoch == opt.epochs - 1)
         if save:
             chkpt = {'epoch': epoch,
+                     'eval_metrics': eval_metrics,
+                     'metric_for_best': opt.metric_for_best,
                      'model': model.state_dict(),
                      'optimizer': optimizer.state_dict()}
 
@@ -298,8 +300,16 @@ if __name__ == "__main__":
             torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_latest.pth")
 
             # best, based on mAP
-            if evaluation_metrics[1][1] > best_mAP:
-                best_mAP = evaluation_metrics[1][1]
+            it_is_best = True  # assume we got some metric's best value up to this point
+            if os.path.exists(f"{opt.checkpoints}/yolov3_ckpt_best.pth"):
+                chkpt_best = torch.load(f"{opt.checkpoints}/yolov3_ckpt_best.pth")
+                if 'metric_for_best' in chkpt_best:
+                    assert chkpt_best['metric_for_best'] == opt.metric_for_best
+                    mval_best = chkpt_best['eval_metrics'][opt.metric_for_best]
+                    if mval_best >= eval_metrics[opt.metric_for_best]:  # in case current is not better than best
+                        it_is_best = False
+
+            if it_is_best:
                 torch.save(chkpt, f"{opt.checkpoints}/yolov3_ckpt_best.pth")
 
             # periodic saving, every opt.checkpoint_interval
