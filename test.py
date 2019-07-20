@@ -57,7 +57,7 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
 
         # imgs = Variable(imgs.type(Tensor), requires_grad=False)
         with torch.no_grad():
-            loss, outputs = model(imgs, targets) # targets only evaluation loss
+            loss, _, outputs = model(imgs, targets) # targets only evaluation loss
             outputs = non_max_suppression(outputs, conf_thres=conf_thres, nms_thres=nms_thres)
 
         # Extract labels

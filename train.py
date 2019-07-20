@@ -75,8 +75,8 @@ if __name__ == "__main__":
     # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
 
     # If specified we start from checkpoint
-    pretrained_names = None
     st_epoch = 0
+    clean_results = True
     if opt.pretrained_weights:
         weights = [w for w in opt.pretrained_weights.split(',')]
         if len(weights) == 1 and weights[0].endswith('.pth'):
@@ -86,13 +86,16 @@ if __name__ == "__main__":
             if chkpt['optimizer'] is not None:
                 optimizer.load_state_dict(chkpt['optimizer'])
             del chkpt
+            clean_results = False
         else:
             for k, w in enumerate(weights):
-                pretrained_names = model.load_darknet_weights(w, k=k, cutoff=-1)
+                _ = model.load_darknet_weights(w, k=k, cutoff=-1)
                 # Remove old results
-                debug_images = os.path.join(opt.output, '*_batch*.jpg')
-                for f in glob.glob(debug_images) + glob.glob(results_file):
-                    os.remove(f)
+
+    if clean_results:
+        debug_images = os.path.join(opt.output, '*_batch*.jpg')
+        for f in glob.glob(debug_images) + glob.glob(results_file):
+            os.remove(f)
 
     datasets = [ListDataset(cfg["train"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
                 for cfg in data_configs]
@@ -255,20 +258,18 @@ if __name__ == "__main__":
                 num_workers=8
             )
             evaluation_metrics = [
-                # ("tr_loss", np.mean(loss_batches_tr)),
-                ("tr_loss", mloss),
-                ("val_loss", np.mean(loss_batches_eval)),
                 ("val_precision", precision.mean()),
                 ("val_recall", recall.mean()),
                 ("val_mAP", AP.mean()),
                 ("val_f1", f1.mean()),
+                ("val_loss", np.mean(loss_batches_eval))
             ]
 
             logger.list_of_scalars_summary(evaluation_metrics, epoch)
 
-            summary_table = [['#epoch'] + [metric_name for metric_name, _ in evaluation_metrics]]
-            summary_table += [['%d/%d' % (epoch+1, opt.epochs)] + ["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
-            print(AsciiTable(summary_table).table)
+            # summary_table = [['#epoch'] + [metric_name for metric_name, _ in evaluation_metrics]]
+            # summary_table += [['%d/%d' % (epoch+1, opt.epochs)] + ["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
+            # print(AsciiTable(summary_table).table)
 
             # Print class APs and mAP
             # ap_table = [["Index", "Class name", "AP"]]
@@ -279,8 +280,10 @@ if __name__ == "__main__":
 
             # s = ('%8s%12s' + '%10.3g' * 7) % (
             #     '%g/%g' % (epoch, epochs - 1), '%g/%g' % (i, nb - 1), *mloss, len(targets), img_size)
-            # with open(results_file, 'a') as file:
-            #     file.write(s + '%11.3g' * 5 % results + '\n')
+
+            # Write epoch results
+            with open(results_file, 'a') as file:
+                file.write(s + '%11.3g' * 5 % tuple([x for _, x in evaluation_metrics]) + '\n')
 
         # Save training results
         save = (not opt.nosave) or (epoch == opt.epochs - 1)
