@@ -133,8 +133,8 @@ if __name__ == "__main__":
         collate_fn=multidataset.collate_fn,
     )
 
-    # scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (0.8, 0.9)], gamma=0.1)
-    # scheduler.last_epoch = st_epoch - 1
+    scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[round(opt.epochs * x) for x in (1./3, 2./3)], gamma=0.5)
+    scheduler.last_epoch = st_epoch - 1
 
     metrics = [
         "grid_size",
@@ -159,7 +159,6 @@ if __name__ == "__main__":
     for epoch in range(st_epoch, st_epoch + opt.epochs):
 
         model.train()
-        # scheduler.step()
 
         if epoch == opt.unfreeze_at_epoch:
             for name, p in model.named_parameters():
@@ -318,5 +317,7 @@ if __name__ == "__main__":
 
             # Delete checkpoint
             del chkpt
+
+        scheduler.step()
 
 
