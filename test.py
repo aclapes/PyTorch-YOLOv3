@@ -87,7 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--iou_thres", type=float, default=0.5, help="iou threshold required to qualify as detected")
     parser.add_argument("--conf_thres", type=float, default=0.5, help="object confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.5, help="iou thresshold for non-maximum suppression")
-    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--n_cpu", type=int, default=4, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
     parser.add_argument("--output", type=str, default="output/", help="path to data config file")
 
@@ -123,7 +123,7 @@ if __name__ == "__main__":
 
     print("Compute mAP...")
 
-    loss_batches_eval, precision, recall, AP, f1, ap_class = evaluate(
+    eval_losses, results = evaluate(
         model,
         data_configs,
         opt.output,
@@ -134,17 +134,14 @@ if __name__ == "__main__":
         batch_size=8,
     )
 
-    evaluation_metrics = [
-        ("val_loss", np.mean(loss_batches_eval)),
-        ("val_precision", precision.mean()),
-        ("val_recall", recall.mean()),
-        ("val_mAP", AP.mean()),
-        ("val_f1", f1.mean()),
-    ]
+    metric_names = ["val_precision", "val_recall", "val_mAP", "val_f1", "val_loss"]
+    eval_metrics = {m: r.mean() for m, r in zip(metric_names, results[:-1] + (eval_losses,))}
 
-    summary_table = [[metric_name for metric_name, _ in evaluation_metrics]]
-    summary_table += [["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
-    print(AsciiTable(summary_table).table)
+    print('%11.3g' * 5 % tuple([eval_metrics[m] for m in metric_names]))
+
+    # summary_table = [[metric_name for metric_name, _ in evaluation_metrics]]
+    # summary_table += [["%.5f" % metric_val for _, metric_val in evaluation_metrics]]
+    # print(AsciiTable(summary_table).table)
 
     # print("Average Precisions:")
     # for i, c in enumerate(ap_class):

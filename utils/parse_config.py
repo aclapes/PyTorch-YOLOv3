@@ -1,4 +1,4 @@
-
+from collections import OrderedDict
 
 # def parse_model_config(path):
 #     """Parses the yolo-v3 layer configuration file and returns module definitions"""
@@ -26,7 +26,7 @@ def parse_model_cfg(path):
     lines = [x for x in lines if x and not x.startswith('#')]
     lines = [x.rstrip().lstrip() for x in lines]  # get rid of fringe whitespaces
     hyperparams = {}
-    module_defs = {}
+    module_defs = OrderedDict()
     sx = -1
     for line in lines:
         if line.startswith('['):  # This marks the start of a new block

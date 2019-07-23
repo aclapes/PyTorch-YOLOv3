@@ -9,7 +9,8 @@ from collections import OrderedDict
 import argparse
 
 from utils.parse_config import *
-from utils.utils import build_targets, to_cpu, common_entries, non_max_suppression
+from utils.utils import build_targets, to_cpu, common_items, non_max_suppression, rng2inds
+import os
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -547,7 +548,7 @@ class Darknet(nn.Module):
                 header = np.fromfile(f, dtype=np.int32, count=(5+1))
                 self.header_info = header[:-1]  # Needed to write header when saving weights
                 self.seen = header[3]  # number of images seen during training
-                self.lengths_sx = np.fromfile(f, dtype=np.int32, count=header[-1])
+                self.streams_len = np.fromfile(f, dtype=np.int32, count=header[-1])
                 weights = np.fromfile(f, dtype=np.float32)
 
         # Establish cutoff for loading backbone weights
@@ -605,50 +606,120 @@ class Darknet(nn.Module):
                         p.requires_grad = False
 
 
-    def save_darknet_weights(self, path, cutoff=None, ff=False): #, discard_root=False):
+    # def save_darknet_weights(self, path, cutoff=None, ff=False): #, discard_root=False):
+    #     """
+    #         @:param path    - path of the new weights file
+    #         @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
+    #     """
+    #
+    #     # cutoff needs to be: (a) a scalar, (b) a dict, or (c) None.
+    #     if cutoff is not None and not hasattr(cutoff, '__len__'):  # if a scalar
+    #         cutoff = {'0': cutoff}
+    #     elif isinstance(cutoff, dict):
+    #         assert len(cutoff) == len(self.sx_module_defs)  # error check
+    #     elif cutoff is None:
+    #         cutoff = {sx: -1 for sx in self.sx_module_defs.keys()}
+    #     else:
+    #         raise AttributeError
+    #
+    #     conv_modules = []
+    #     for sx, modules_sx in self.sx_module_defs.items():
+    #         cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
+    #                        if cutoff[sx] == -1 or i < cutoff[sx]]
+    #         if sx != '0':
+    #             conv_modules += [np.sum(cutoff_list)]
+    #         elif not ff:
+    #             conv_modules += [np.sum(cutoff_list)]
+    #         else: # ff
+    #             conv_modules[-1] += np.sum(cutoff_list)
+    #
+    #     self.lengths_sx = np.array([len(conv_modules)] + conv_modules, dtype=np.int32)
+    #     self.header_info[3] = self.seen
+    #
+    #     fp = open(path, "wb")
+    #     np.concatenate([self.header_info, self.lengths_sx]).tofile(fp)
+    #
+    #     # Iterate through layers
+    #     root_defs, root_module_list = [], []
+    #     if ff and '0' in self.sx_module_lists:
+    #         root_defs, root_module_list = self.sx_module_defs['0'], self.sx_module_lists['0']
+    #         del self.sx_module_defs['0']
+    #         del self.sx_module_lists['0']
+    #
+    #     for sx, defs_sx in self.sx_module_defs.items():
+    #         defs_sx = self.sx_module_defs[sx] + root_defs if sx != '0' else self.sx_module_defs[sx]
+    #         modules_sx = self.sx_module_lists[sx] + root_module_list if sx != '0' else self.sx_module_lists[sx]
+    #         for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
+    #             if module_def["type"] == "convolutional":
+    #                 conv_layer = module[0]
+    #                 # If batch norm, load bn first
+    #                 if module_def["batch_normalize"]:
+    #                     bn_layer = module[1]
+    #                     bn_layer.bias.data.cpu().numpy().tofile(fp)
+    #                     bn_layer.weight.data.cpu().numpy().tofile(fp)
+    #                     bn_layer.running_mean.data.cpu().numpy().tofile(fp)
+    #                     bn_layer.running_var.data.cpu().numpy().tofile(fp)
+    #                 # Load conv bias
+    #                 else:
+    #                     conv_layer.bias.data.cpu().numpy().tofile(fp)
+    #                 # Load conv weights
+    #                 conv_layer.weight.data.cpu().numpy().tofile(fp)
+    #
+    #     fp.close()
+
+    def save_darknet_weights(self, path, include=None, ff=False):  # , discard_root=False):
         """
             @:param path    - path of the new weights file
             @:param cutoff  - save layers between 0 and cutoff (cutoff = -1 -> all are saved)
         """
 
         # cutoff needs to be: (a) a scalar, (b) a dict, or (c) None.
-        if cutoff is not None and not hasattr(cutoff, '__len__'):  # if a scalar
-            cutoff = {'0': cutoff}
-        elif isinstance(cutoff, dict):
-            assert len(cutoff) == len(self.sx_module_defs)  # error check
-        elif cutoff is None:
-            cutoff = {sx: -1 for sx in self.sx_module_defs.keys()}
+        if include is None:
+            include = {}
+
+        if isinstance(include, dict):
+            for sx, defs_sx in self.sx_module_defs.items():
+                if sx not in include:
+                    include[sx] = np.arange(len(defs_sx))
+        elif isinstance(include, list):
+            assert len(self.sx_module_defs) == 1
+            include = {'0': include}
         else:
             raise AttributeError
 
-        conv_modules = []
-        for sx, modules_sx in self.sx_module_defs.items():
-            cutoff_list = [module_def['type'] == 'convolutional' for i, module_def in enumerate(modules_sx)
-                           if cutoff[sx] == -1 or i < cutoff[sx]]
+        modules_conv = []
+        for sx, defs_sx in self.sx_module_defs.items():
+            defs_sx = [module_def['type'] == 'convolutional'
+                       for i, module_def in enumerate(defs_sx) if i in include[sx]]
             if sx != '0':
-                conv_modules += [np.sum(cutoff_list)]
+                modules_conv += [np.sum(defs_sx)]
             elif not ff:
-                conv_modules += [np.sum(cutoff_list)]
-            else: # ff
-                conv_modules[-1] += np.sum(cutoff_list)
+                modules_conv += [np.sum(defs_sx)]
+            else:  # ff
+                modules_conv[-1] += np.sum(defs_sx)
 
-        self.lengths_sx = np.array([len(conv_modules)] + conv_modules, dtype=np.int32)
+        self.streams_len = np.array([len(modules_conv)] + modules_conv, dtype=np.int32)
         self.header_info[3] = self.seen
 
         fp = open(path, "wb")
-        np.concatenate([self.header_info, self.lengths_sx]).tofile(fp)
+        np.concatenate([self.header_info, self.streams_len]).tofile(fp)
 
-        # Iterate through layers
-        root_defs, root_module_list = [], []
-        if ff and '0' in self.sx_module_lists:
-            root_defs, root_module_list = self.sx_module_defs['0'], self.sx_module_lists['0']
-            del self.sx_module_defs['0']
-            del self.sx_module_lists['0']
+        # if ff and len(self.sx_module_defs) > 1:
+        #     root_defs, root_module_list = self.sx_module_defs['0'], self.sx_module_lists['0']
+        #     del self.sx_module_defs['0']
+        #     del self.sx_module_lists['0']
 
-        for sx, defs_sx in self.sx_module_defs.items():
-            defs_sx = self.sx_module_defs[sx] + root_defs if sx != '0' else self.sx_module_defs[sx]
-            modules_sx = self.sx_module_lists[sx] + root_module_list if sx != '0' else self.sx_module_lists[sx]
-            for i, (module_def, module) in enumerate(zip(defs_sx[:cutoff[sx]], modules_sx[:cutoff[sx]])):
+        for sx, defs_sx, modules_sx in common_items(self.sx_module_defs, self.sx_module_lists):
+            defs_sx = [x for i, x in enumerate(defs_sx) if i in include[sx]]
+            modules_sx = [x for i, x in enumerate(modules_sx) if i in include[sx]]
+            if ff:
+                if sx == '0':
+                    continue
+                else:
+                    defs_sx += [x for i, x in enumerate(self.sx_module_defs['0']) if i in include[sx]]
+                    modules_sx += [x for i, x in enumerate(self.sx_module_lists['0']) if i in include[sx]]
+
+            for i, (module_def, module) in enumerate(zip(defs_sx, modules_sx)):
                 if module_def["type"] == "convolutional":
                     conv_layer = module[0]
                     # If batch norm, load bn first
@@ -667,7 +738,7 @@ class Darknet(nn.Module):
         fp.close()
 
 
-def convert(cfg, input_weights, output_weights=None, cutoff=None, ff=False):
+def convert(cfg, input_weights, output_weights=None, cutoff=None, ff=False, include=None):
     # Converts between PyTorch and Darknet format per extension (i.e. *.weights convert to *.pt and vice versa)
     # from models import *; convert('cfg/yolov3-spp.cfg', 'weights/yolov3-spp.weights')
 
@@ -682,7 +753,9 @@ def convert(cfg, input_weights, output_weights=None, cutoff=None, ff=False):
             output_weights = 'converted.weights'
 
         model.load_state_dict(torch.load(input_weights, map_location='cpu')['model'])
-        model.save_darknet_weights(output_weights, cutoff=cutoff, ff=ff)
+        # model.save_darknet_weights(output_weights, cutoff=cutoff, ff=ff, save=save)
+        os.makedirs(os.path.dirname(output_weights), exist_ok=True)
+        model.save_darknet_weights(output_weights, include=rng2inds(include), ff=ff)
         print("Success: converted '%s' to '%s'" % (input_weights, output_weights))
 
     elif input_weights.endswith('.weights'):  # darknet format
@@ -705,9 +778,10 @@ if __name__ == "__main__":
     parser.add_argument("--model_def", type=str, default="config/yolov3-1cls-dropout-supertiny.cfg", help="path to model definition file")
     parser.add_argument("--input_weights", type=str, help="if specified starts from checkpoint model")
     parser.add_argument("--output_weights", type=str, help="if specified starts from checkpoint model")
+    parser.add_argument("--include", type=str, help="Discard (or keep) the 0-th stream (root) weights")
     parser.add_argument("--ff", action='store_true', help="Discard (or keep) the 0-th stream (root) weights")
     opt = parser.parse_args()
     print(opt)
 
-    convert(opt.model_def, opt.input_weights, opt.output_weights) #, discard_root=opt.discard_root)
+    convert(opt.model_def, opt.input_weights, opt.output_weights, include=opt.include) #, discard_root=opt.discard_root)
 

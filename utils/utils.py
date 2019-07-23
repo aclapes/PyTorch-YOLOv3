@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import cv2
 import random
+import re
 
 
 def to_cpu(tensor):
@@ -427,7 +428,7 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 #
 #     return output
 
-def common_entries(*dcts):
+def common_items(*dcts):
     for i in set(dcts[0]).intersection(*dcts[1:]):
         yield (i,) + tuple(d[i] for d in dcts)
 
@@ -522,3 +523,141 @@ def plot_one_box(x1, y1, x2, y2, img, color=None, label=None, line_thickness=Non
         c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
         cv2.rectangle(img, c1, c2, color, -1)  # filled
         cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+
+
+def plot_results(ax, files, metric=['loss', 'val_loss']):
+    if len(metric) == 1:
+        cmap = plt.get_cmap("tab10")
+    elif len(metric) == 2:
+        cmap = plt.get_cmap("tab20")
+    else:
+        return NotImplementedError
+
+    for i, (name,file) in enumerate(files.items()):
+        with open(file, 'r') as f:
+            lines = np.array([line.strip().split()[2:] for line in f], dtype=np.float32)
+            assert len(fields) == lines.shape[1]
+
+            colors = [cmap(i)] if len(metric) == 1 else [cmap(2 * i + 1), cmap(2 * i)]
+            for k, m in enumerate(metric):
+                label = ('%s (%s)' % (name, m)) if len(metric) > 1 else ('%s' % name)
+                ax.plot(np.arange(lines.shape[0]), lines[:, fields.index(m)], '-', label=label, color=colors[k])
+
+    if not 'loss' in metric and not 'val_loss' in metric:
+        ax.set_ylim([0, 1])
+    # ax.title('+'.join(metric))
+    ax.legend()
+    ax.set_xlabel("#training epochs")
+    ax.set_title('+'.join(metric))
+
+
+def rng2inds(ranges, default_key='0'):
+    if ranges is None:
+        return None
+
+    inds = {}
+    for part in ranges.strip().split(';'):
+        part = part.strip()
+        try:
+            key, value = part.split(':')
+        except ValueError:
+            key = default_key
+            try:
+                value = int(part)
+            except ValueError:
+                if ',' in part or '..' in part:
+                    value = part
+                else:
+                    continue
+
+        for elem in value.split(','):
+            try:
+                begin, end = elem.split('..')
+                try:
+                    rng = list(range(int(begin), int(end)))
+                except ValueError:
+                    continue
+
+                inds.setdefault(key, [])
+                inds[key] += rng
+
+            except ValueError:  # rng is a scalar
+                try:
+                    scalar = int(elem)
+                except ValueError:
+                    continue
+
+                inds.setdefault(key, [])
+                inds[key] += [scalar]
+
+    return inds if len(inds) > 0 else None
+
+
+if __name__ == "__main__":
+    # pex = '0:0..5,5..6,6;1:1..3'
+    # print(rng2inds(pex))
+    # pex = '0:0..5,5..6,6'
+    # print(rng2inds(pex))
+    # pex = '0..5,5..6,6'
+    # print(rng2inds(pex))
+    # pex = '1:0..5,5..6,6'
+    # print(rng2inds(pex))
+    # pex = '0:0'
+    # print(rng2inds(pex))
+    # pex = '0:1'
+    # print(rng2inds(pex))
+    # pex = ''
+    # print(rng2inds(pex))
+    # pex = ' '
+    # print(rng2inds(pex))
+    # pex = 'x'
+    # print(rng2inds(pex))
+    # pex = None
+    # print(rng2inds(pex))
+    # pex = 'x;1:0'
+    # print(rng2inds(pex))
+
+    fields = ["xy", "wh", "obj", "cls", "loss", "targets", "img_size",
+              "val_precision", "val_recall", "val_mAP", "val_f1", "val_loss"]
+
+    # fig = plt.Figure(figsize=(28, 14))
+    fig, ax = plt.subplots(nrows=2, ncols=5, figsize=(24, 12))
+    ax = ax.flatten()
+
+    outputs = {'depth-!pre-!cmap': 'output-0/results.txt',
+               'depth-!pre-cmap': 'output-1/results.txt',
+               'depth-pre-!cmap': 'output-2/results.txt',
+               'depth-pre-cmap': 'output-3/results.txt'}
+    # plt.subplot(2, 5, 1)
+    plot_results(ax[0], outputs, ['val_precision']) #, save_to='results_precision_0-1-2-3.png')
+    # plt.subplot(2, 5, 2)
+    plot_results(ax[1], outputs, ['val_recall'])#, save_to='results_recall_0-1-2-3.png')
+    # plt.subplot(2, 5, 3)
+    plot_results(ax[2], outputs, ['val_mAP'])#, save_to='results_mAP_0-1-2-3.png')
+    # plt.subplot(2, 5, 4)
+    plot_results(ax[3], outputs, ['val_f1'])#, save_to='results_f1_0-1-2-3.png')
+    # plt.subplot(2, 5, 5)
+    plot_results(ax[4], outputs, ['loss','val_loss'])#, save_to='results_loss_0-1-2-3.png')
+    #
+    # outputs = ['4', '5', '6', '7']
+    # outputs = [f"output-{o}/results.txt" for o in outputs]
+    outputs = {'thermal-!pre-!cmap': 'output-4/results.txt',
+               'thermal-!pre-cmap': 'output-5/results.txt',
+               'thermal-pre-!cmap': 'output-6/results.txt',
+               'thermal-pre-cmap': 'output-7/results.txt'}
+    # plt.subplot(2, 5, 6)
+    plot_results(ax[5], outputs, ['val_precision'])#, save_to='results_precision_4-5-6-7.png')
+    # plt.subplot(2, 5, 7)
+    plot_results(ax[6], outputs, ['val_recall'])#, save_to='results_recall_4-5-6-7.png')
+    # plt.subplot(2, 5, 8)
+    plot_results(ax[7], outputs, ['val_mAP'])#, save_to='results_mAP_4-5-6-7.png')
+    # plt.subplot(2, 5, 9)
+    plot_results(ax[8], outputs, ['val_f1'])#, save_to='results_f1_4-5-6-7.png')
+    # plt.subplot(2, 5, 10)
+    plot_results(ax[9], outputs, ['loss','val_loss'])#, save_to='results_loss_4-5-6-7.png')
+
+    fig.tight_layout()
+    fig.savefig('results.jpg')
+    plt.close()
+
+    quit()
