@@ -123,6 +123,22 @@ def create_modules(hyperparams, sx_module_defs):
                 if module_def['activation'] == 'leaky':
                     modules.add_module('leaky@%s_%d' % (sx, i), nn.LeakyReLU(0.1, inplace=True))
 
+            elif module_def['type'] == 'rconvolutional':
+                bn = int(module_def['batch_normalize'])
+                if bn:
+                    modules.add_module('batch_norm@%s_%d' % (sx, i), nn.BatchNorm2d(sx_output_filters[sx][-1]))
+                if module_def['activation'] == 'leaky':
+                    modules.add_module('leaky@%s_%d' % (sx, i), nn.LeakyReLU(0.1, inplace=True))
+
+                kernel_size = int(module_def['size'])
+                pad = (kernel_size - 1) // 2 if int(module_def['pad']) else 0
+                filters = int(module_def['filters'])
+                modules.add_module('conv@%s_%d' % (sx, i), nn.Conv2d(in_channels=sx_output_filters[sx][-1],
+                                                                     out_channels=filters,
+                                                                     kernel_size=kernel_size,
+                                                                     stride=int(module_def['stride']),
+                                                                     padding=pad,
+                                                                     bias=not bn))
             elif module_def['type'] == 'maxpool':
                 kernel_size = int(module_def['size'])
                 stride = int(module_def['stride'])
@@ -150,6 +166,13 @@ def create_modules(hyperparams, sx_module_defs):
             elif module_def['type'] == 'shortcut':
                 filters = sx_output_filters[sx][int(module_def['from'])]
                 modules.add_module('shortcut@%s_%d' % (sx, i), EmptyLayer())
+
+            elif module_def['type'] == 'activation':
+                if module_def['function'] == 'leaky':
+                    modules.add_module('leaky@%s_%d' % (sx, i), nn.LeakyReLU(0.1, inplace=True))
+
+            elif module_def['type'] == 'bn':
+                modules.add_module('batch_norm@%s_%d' % (sx, i), nn.BatchNorm2d(sx_output_filters[sx][-1]))
 
             elif module_def['type'] == 'yolo':
                 yolo_index += 1
@@ -496,7 +519,7 @@ class Darknet(nn.Module):
             modules_sx = self.sx_module_lists[sx]
             yolos[sx] = []
             for i, (module_def, module) in enumerate(zip(defs_sx, modules_sx)):
-                if module_def["type"] in ["convolutional", "upsample", "maxpool", "dropout"]:
+                if module_def["type"] in ["convolutional", "upsample", "maxpool", "dropout", "bn", "activation", "rconvolutional"]:
                     x[sx] = module(x[sx])
                 elif module_def["type"] == "route":
                     routes = [x for x in module_def['layers'].split(',')]
