@@ -94,7 +94,7 @@ if __name__ == "__main__":
     opt = parser.parse_args()
     print(opt)
 
-    os.makedirs(opt.output, exist_ok=True)
+    # os.makedirs(opt.output, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

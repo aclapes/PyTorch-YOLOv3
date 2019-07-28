@@ -23,7 +23,7 @@ from torchvision import transforms
 from torch.autograd import Variable
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
-
+import adabound
 
 hyp = {'lr0': 0.001,  # initial learning rate
        'lrf': -5.,  # final learning rate = lr0 * (10 ** lrf)
@@ -74,7 +74,8 @@ if __name__ == "__main__":
     model.apply(weights_init_normal)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
-    # optimizer = optim.SGD(model.parameters(), lr=hyp['lr0'], momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
+    # optimizer = optim.SGD(model.parameters(), lr=opt.lr, momentum=hyp['momentum'], weight_decay=hyp['weight_decay'])
+    # optimizer = adabound.AdaBound(model.parameters(), lr=opt.lr, final_lr=0.1)
 
     # If specified we start from checkpoint
     st_epoch = 0

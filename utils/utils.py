@@ -660,4 +660,20 @@ if __name__ == "__main__":
     fig.savefig('results.jpg')
     plt.close()
 
+    fig, ax = plt.subplots(nrows=1, ncols=5, figsize=(24, 6))
+    ax = ax.flatten()
+
+    outputs = {'lala': 'output-lala.2/results.txt',
+               'lami': 'output-lami.2/results.txt',
+               'lami_res': 'output-lami_newres.5/results.txt'}
+    plot_results(ax[0], outputs, ['val_precision']) #, save_to='results_precision_0-1-2-3.png')
+    plot_results(ax[1], outputs, ['val_recall'])#, save_to='results_recall_0-1-2-3.png')
+    plot_results(ax[2], outputs, ['val_mAP'])#, save_to='results_mAP_0-1-2-3.png')
+    plot_results(ax[3], outputs, ['val_f1'])#, save_to='results_f1_0-1-2-3.png')
+    plot_results(ax[4], outputs, ['loss','val_loss'])#, save_to='results_loss_0-1-2-3.png')
+
+    fig.tight_layout()
+    fig.savefig('results_fusion.jpg')
+    plt.close()
+
     quit()
