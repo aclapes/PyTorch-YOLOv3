@@ -104,10 +104,10 @@ if __name__ == "__main__":
                 for cfg in data_configs]
 
     # Get dataloader
-    multidataset = ParallelDataset(datasets,
-                                   augment=True,
-                                   multiscale=opt.multiscale_training,
-                                   rescale_every_n_batches=opt.rescale_every_n_batches)
+    multidataset = ParallelListDataset(datasets,
+                                       augment=True,
+                                       multiscale=opt.multiscale_training,
+                                       rescale_every_n_batches=opt.rescale_every_n_batches)
 
     # train_dict = dict()
     # nc = -1

@@ -29,10 +29,10 @@ def evaluate(model, data_configs, output, iou_thres, conf_thres, nms_thres, img_
     datasets = [ListDataset(cfg["valid"], img_norm=cfg['normalization'], color_map=cfg['color_map'])
                 for cfg in data_configs]
 
-    multidataset = ParallelDataset(datasets,
-                                   img_size=img_size,
-                                   augment=False,
-                                   multiscale=False)
+    multidataset = ParallelListDataset(datasets,
+                                       img_size=img_size,
+                                       augment=False,
+                                       multiscale=False)
 
     dataloader = torch.utils.data.DataLoader(
         multidataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=multidataset.collate_fn

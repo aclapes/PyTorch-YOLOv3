@@ -52,10 +52,18 @@ class ImageFolder(Dataset):
 
         # Extract image as PyTorch tensor
         img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        try:
-            img0 = img.copy()
-        except AttributeError:
-            return img_path, None, None
+        if img is None:
+            return None
+
+        img0 = img.copy()
+
+        # if self.img_norm:
+        #     img = image_normalization(img, self.img_norm, self.img_norm_rng)
+        #
+        # if self.color_map:
+        #     img = cv2.applyColorMap(img.astype(np.uint8), colormap=cv2.COLORMAP_JET)
+        # else:
+        #     img = np.tile(img[:, :, np.newaxis], 3)
 
         if len(img.shape) != 3:
             if self.img_norm:
@@ -76,7 +84,7 @@ class ImageFolder(Dataset):
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
         img = torch.from_numpy(img)
-        resize(img, self.img_size)
+        img = resize(img, self.img_size)
 
         return img_path, img, img0
 
@@ -93,6 +101,42 @@ class ImageFolder(Dataset):
 
         return paths, torch.stack(imgs), imgs0
 
+class ParallelImageFolder(Dataset):
+    def __init__(self, datasets, img_size=416):
+        self.datasets = datasets
+
+        self.n = len(self.datasets[0])
+
+        # check integrity
+        for dset in self.datasets[1:]:
+            assert self.n == len(dset)
+
+        # these will override original individual dataset parametrizations
+        self.img_size = img_size
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, index):
+        items = []
+        for dset in self.datasets:
+            item = dset[index]
+            if item is None: # error reading some dataset element
+                return None
+            else:
+                items += [item]
+
+        return items
+
+    def collate_fn(self, batches):
+        # pre-filter when problems loading some frame in a batch
+        batches = [batch for batch in batches if batch is not None]
+        batches = list(zip(*batches))
+        collation = []
+        for batch in batches:
+            paths, imgs, imgs0 = list(zip(*batch))
+            collation += [(paths, torch.stack(imgs), np.array(imgs0))]
+        return collation
 
 class ListDataset(Dataset):
     def __init__(self, list_path, img_size=416, augment=True, multiscale=True, normalized_labels=True,
@@ -248,32 +292,7 @@ class ListDataset(Dataset):
         return len(self.img_files)
 
 
-class ParallelDataset(Dataset):
-    # def __init__(self, datasets, augment=True, multiscale=False, rescale_every_n_batches=10):
-    #     assert datasets and len(datasets) > 1
-    #     self.datasets = datasets
-    #
-    #     # copy some parameters of the 0-th index dataset
-    #     self.n = len(self.datasets[0])  # same length!!
-    #     self.img_size = self.datasets[0].img_size  # same image size
-    #     self.augment = self.datasets[0].augment  # some augmentations need to be consistent between
-    #     self.multiscale = self.datasets[0].multiscale  # scale them both or none
-    #     self.rescale_every_n_batches = rescale_every_n_batches
-    #     self.min_size = self.datasets[0].min_size
-    #     self.max_size = self.datasets[0].max_size
-    #
-    #     # check coherence
-    #     for dset in self.datasets[1:]:
-    #         assert self.n == len(dset)
-    #         assert self.img_size == dset.img_size
-    #         assert self.augment == dset.augment
-    #         assert self.multiscale == dset.multiscale
-    #         assert self.rescale_every_n_batches == dset.rescale_every_n_batches
-    #         # this two wouldn't be required since they are not parametrized, but in the future may be
-    #         assert self.min_size == dset.min_size
-    #         assert self.max_size == dset.max_size
-    #
-    #     self.batch_count = 0
+class ParallelListDataset(Dataset):
     def __init__(self, datasets, img_size=416, augment=True, multiscale=False, rescale_every_n_batches=10):
         # assert datasets and len(datasets) > 1
         self.datasets = datasets
