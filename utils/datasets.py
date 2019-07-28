@@ -52,10 +52,18 @@ class ImageFolder(Dataset):
 
         # Extract image as PyTorch tensor
         img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        try:
-            img0 = img.copy()
-        except AttributeError:
-            return img_path, None, None
+        if img is None:
+            return None
+
+        img0 = img.copy()
+
+        # if self.img_norm:
+        #     img = image_normalization(img, self.img_norm, self.img_norm_rng)
+        #
+        # if self.color_map:
+        #     img = cv2.applyColorMap(img.astype(np.uint8), colormap=cv2.COLORMAP_JET)
+        # else:
+        #     img = np.tile(img[:, :, np.newaxis], 3)
 
         if len(img.shape) != 3:
             if self.img_norm:
@@ -76,7 +84,7 @@ class ImageFolder(Dataset):
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
         img = torch.from_numpy(img)
-        resize(img, self.img_size)
+        img = resize(img, self.img_size)
 
         return img_path, img, img0
 
@@ -93,6 +101,42 @@ class ImageFolder(Dataset):
 
         return paths, torch.stack(imgs), imgs0
 
+class ParallelImageFolder(Dataset):
+    def __init__(self, datasets, img_size=416):
+        self.datasets = datasets
+
+        self.n = len(self.datasets[0])
+
+        # check integrity
+        for dset in self.datasets[1:]:
+            assert self.n == len(dset)
+
+        # these will override original individual dataset parametrizations
+        self.img_size = img_size
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, index):
+        items = []
+        for dset in self.datasets:
+            item = dset[index]
+            if item is None: # error reading some dataset element
+                return None
+            else:
+                items += [item]
+
+        return items
+
+    def collate_fn(self, batches):
+        # pre-filter when problems loading some frame in a batch
+        batches = [batch for batch in batches if batch is not None]
+        batches = list(zip(*batches))
+        collation = []
+        for batch in batches:
+            paths, imgs, imgs0 = list(zip(*batch))
+            collation += [(paths, torch.stack(imgs), np.array(imgs0))]
+        return collation
 
 class ListDataset(Dataset):
     def __init__(self, list_path, img_size=416, augment=True, multiscale=True, normalized_labels=True,
@@ -126,11 +170,33 @@ class ListDataset(Dataset):
 
         self.color_map = int(color_map)
 
-
     def __getitem__(self, index):
-        return self.getitem(index)
+        img_path, img, label_path = self.retrieve(index)
 
-    def getitem(self, index, Maff=None, flip_lr=None):
+        flip_lr = False
+        Maff = None
+        if self.augment:
+            flip_lr = random.random() > 0.5
+            Maff = get_affine_transformation(img.shape,
+                                             degrees=(-15, 15), #degrees=(-5, 5),
+                                             translate=(0.50, 0.50), #translate=(0.10, 0.10),
+                                             scale=(0.50, 1.50), #scale=(0.90, 1.10),
+                                             border=0)
+
+        return (img_path,) + self.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)
+
+    def load_image(self, img_path):
+        return cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+
+    def retrieve(self, index):
+        img_path = self.img_files[index % len(self.img_files)].rstrip()
+        label_path = self.label_files[index % len(self.img_files)].rstrip()
+
+        img = self.load_image(img_path)
+
+        return img_path, img, label_path
+
+    def preprocess(self, img, label_path, Maff=None, flip_lr=None):
         """
         Returns index-th item out of dataset.
 
@@ -143,17 +209,6 @@ class ListDataset(Dataset):
         #  Image
         # ---------
 
-        img_path = self.img_files[index % len(self.img_files)].rstrip()
-
-        # Extract image as PyTorch tensor
-        # img = transforms.ToTensor()(Image.open(img_path).convert('RGB'))
-
-        # Handle images with less than three channels
-        # if len(img.shape) != 3:
-        #     img = img.unsqueeze(0)
-        #     img = img.expand((3, img.shape[1:]))
-
-        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         h, w = img.shape[:2]
 
         h_factor, w_factor = (h, w) if self.normalized_labels else (1, 1)
@@ -164,8 +219,6 @@ class ListDataset(Dataset):
         # ---------
         #  Label
         # ---------
-
-        label_path = self.label_files[index % len(self.img_files)].rstrip()
 
         labels_xyxy = None
         if os.path.exists(label_path):
@@ -181,10 +234,7 @@ class ListDataset(Dataset):
             labels_xyxy[:, 3] = x2
             labels_xyxy[:, 4] = y2
 
-        if self.augment:
-            if not Maff:
-                Maff = get_affine_transformation(img.shape, degrees=(-5, 5), translate=(0.10, 0.10), scale=(0.90, 1.10), border=0)
-
+        if self.augment and Maff is not None:
             img, labels_xyxy = apply_affine(img, Maff, labels_xyxy, border=0)
 
         nl = len(labels_xyxy)
@@ -196,7 +246,7 @@ class ListDataset(Dataset):
             labels_xywh[:, 4] = (labels_xyxy[:, 4] - labels_xyxy[:, 2]) / padded_h
 
         if self.augment:
-            if flip_lr or (flip_lr is None and random.random() > 0.5):
+            if flip_lr:
                 img = np.fliplr(img)
                 if nl:
                     labels_xywh[:, 1] = 1 - labels_xywh[:, 1]
@@ -220,7 +270,7 @@ class ListDataset(Dataset):
 
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
-        return img_path, torch.from_numpy(img), targets
+        return torch.from_numpy(img), targets
 
     def collate_fn(self, batch):
         paths, imgs, targets = list(zip(*batch))
@@ -240,3 +290,72 @@ class ListDataset(Dataset):
 
     def __len__(self):
         return len(self.img_files)
+
+
+class ParallelListDataset(Dataset):
+    def __init__(self, datasets, img_size=416, augment=True, multiscale=False, rescale_every_n_batches=10):
+        # assert datasets and len(datasets) > 1
+        self.datasets = datasets
+
+        self.n = len(self.datasets[0])
+
+        # check integrity
+        for dset in self.datasets[1:]:
+            assert self.n == len(dset)
+
+        # these will override original individual dataset parametrizations
+        self.img_size = img_size
+        self.augment = augment
+        self.multiscale = multiscale
+        self.rescale_every_n_batches = rescale_every_n_batches
+
+        self.min_size = self.img_size - 3 * 32
+        self.max_size = self.img_size + 3 * 32
+
+        self.batch_count = 0
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, index):
+        '''
+        Retrieves items in parallel from multiple datasets and keeps data augmentation parameters coherent.
+        :param index:
+        :return:
+        '''
+        # data augmentation's stochastic parameters that require consistency between datasets
+        flip_lr = False
+        if self.augment:
+            flip_lr = random.random() > 0.5
+
+        items = []
+        Maff = None
+        for dset in self.datasets:
+            img_path, img, label_path = dset.retrieve(index)
+            if self.augment and Maff is None:
+                Maff = get_affine_transformation(img.shape,
+                                                 degrees=(-15, 15), #degrees=(-5, 5),
+                                                 translate=(0.50, 0.50),
+                                                 scale=(0.50, 1.50), #scale=(0.90, 1.10),
+                                                 border=0)
+            items += [(img_path,) + dset.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)]
+
+        return items
+
+    def collate_fn(self, batches):
+        batches = list(zip(*batches))
+        collation = []
+        for batch in batches:
+            paths, imgs, targets = list(zip(*batch))  # transposed
+            targets = [boxes for boxes in targets if boxes is not None]
+            for i, boxes in enumerate(targets):
+                boxes[:, 0] = i
+            targets = torch.cat(targets, 0)
+            if self.multiscale and (self.batch_count % self.rescale_every_n_batches == 0):
+                self.img_size = random.choice(range(self.min_size, self.max_size + 1, 32))
+            imgs = torch.stack([resize(img, self.img_size) for img in imgs])
+            self.batch_count += 1
+
+            collation += [(paths, imgs, targets)]
+
+        return collation, self.img_size

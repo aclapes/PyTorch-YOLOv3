@@ -1,24 +1,54 @@
+from collections import OrderedDict
 
-
-def parse_model_config(path):
+# def parse_model_config(path):
+#     """Parses the yolo-v3 layer configuration file and returns module definitions"""
+#     file = open(path, 'r')
+#     lines = file.read().split('\n')
+#     lines = [x for x in lines if x and not x.startswith('#')]
+#     lines = [x.rstrip().lstrip() for x in lines] # get rid of fringe whitespaces
+#     module_defs = []
+#     for line in lines:
+#         if line.startswith('['): # This marks the start of a new block
+#             module_defs.append({})
+#             module_defs[-1]['type'] = line[1:-1].rstrip()
+#             if module_defs[-1]['type'] == 'convolutional':
+#                 module_defs[-1]['batch_normalize'] = 0
+#         else:
+#             key, value = line.split("=")
+#             value = value.strip()
+#             module_defs[-1][key.rstrip()] = value.strip()
+#
+#     return module_defs
+def parse_model_cfg(path):
     """Parses the yolo-v3 layer configuration file and returns module definitions"""
     file = open(path, 'r')
     lines = file.read().split('\n')
     lines = [x for x in lines if x and not x.startswith('#')]
-    lines = [x.rstrip().lstrip() for x in lines] # get rid of fringe whitespaces
-    module_defs = []
+    lines = [x.rstrip().lstrip() for x in lines]  # get rid of fringe whitespaces
+    hyperparams = {}
+    module_defs = OrderedDict()
+    sx = -1
     for line in lines:
-        if line.startswith('['): # This marks the start of a new block
-            module_defs.append({})
-            module_defs[-1]['type'] = line[1:-1].rstrip()
-            if module_defs[-1]['type'] == 'convolutional':
-                module_defs[-1]['batch_normalize'] = 0
+        if line.startswith('['):  # This marks the start of a new block
+            module_key = line.rstrip()[1:-1].split('@')
+
+            if module_key[0] != 'net':
+                module_type = module_key[0]
+                sx = module_key[1] if len(module_key) == 2 else '0'
+                module_defs.setdefault(sx, []).append({})
+                module_defs[sx][-1]['type'] = module_type
+                if module_type == 'convolutional' or module_type == 'rconvolutional':
+                    module_defs[sx][-1]['batch_normalize'] = 0  # pre-populate with zeros (may be overwritten later)
         else:
             key, value = line.split("=")
-            value = value.strip()
-            module_defs[-1][key.rstrip()] = value.strip()
+            key, value = key.strip(), value.strip()
+            if len(module_defs) > 0:
+                module_defs[sx][-1][key] = value
+            else:
+                hyperparams[key] = value
 
-    return module_defs
+    return hyperparams, module_defs
+
 
 def parse_data_config(path):
     """Parses the data configuration file"""

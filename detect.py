@@ -21,10 +21,10 @@ if __name__ == "__main__":
     parser.add_argument("--conf_thres", type=float, default=0.5, help="object confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.20, help="iou thresshold for non-maximum suppression")
     parser.add_argument("--batch_size", type=int, default=8, help="size of the batches")
-    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--n_cpu", type=int, default=1, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
-    parser.add_argument("--scale_factor", type=float, default=1, help="scale factor of images for visualization only")
-    parser.add_argument("--detection_images", type=str, default="detection_images/", help="where to output detections")
+    parser.add_argument("--scale_factor", type=str, default="0.25,2", help="scale factor of images for visualization only")
+    parser.add_argument("--detection_output", type=str, default="detection_images/", help="where to output detections")
     opt = parser.parse_args()
     print(opt)
 
@@ -43,27 +43,43 @@ if __name__ == "__main__":
     model.eval()  # Set in evaluation mode
 
     # Prepare data
-    data_config = parse_data_config(opt.data_config)
-    classes = load_classes(data_config['names'])  # Extracts class labels from file
+    data_configs = [parse_data_config(cfg) for cfg in opt.data_config.split(',')]
 
-    dataset = ImageFolder(opt.input_image_folder, img_size=opt.img_size,
-                    img_norm=data_config['normalization'], color_map=data_config['color_map'])
+    # classes = load_classes(data_config['names'])  # Extracts class labels from file
+    classes = None
+    for cfg in data_configs:
+        classes_i = load_classes(cfg['names'])
+        if classes:
+           assert classes_i == classes
+        classes = classes_i
 
-    dataloader = DataLoader(
-        dataset,
+    datasets = [ImageFolder(input, img_norm=cfg['normalization'], color_map=cfg['color_map'])
+                for input, cfg in zip(opt.input_image_folder.split(','), data_configs)]
+
+    multidataset = ParallelImageFolder(datasets, img_size=opt.img_size)
+
+    dataloader = torch.utils.data.DataLoader(
+        multidataset,
         batch_size=opt.batch_size,
         shuffle=False,
         num_workers=opt.n_cpu,
-        collate_fn=dataset.collate_fn
+        pin_memory=True,
+        collate_fn=multidataset.collate_fn,
     )
 
-    os.makedirs(f"{opt.detection_images}", exist_ok=True)
+    detection_output = opt.detection_output.split(',')
+    for path in detection_output:
+        os.makedirs(path, exist_ok=True)
+
+    scale_factor = [float(sf) for sf in opt.scale_factor.split(',')]
+
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(classes))]
 
     st_time = time.time()
-    for batch_i, (paths, imgs, imgs0) in enumerate(dataloader):
+    for batch_i, collation in enumerate(dataloader):
+        paths, imgs, imgs0 = list(zip(*collation))
         # Input batch contains several images
-        input_tensor = imgs.type(Tensor)
+        input_tensor = [imgs_i.type(Tensor) for imgs_i in imgs]
 
         # Get detections
         with torch.no_grad():
@@ -71,27 +87,30 @@ if __name__ == "__main__":
             dets = non_max_suppression(dets, opt.conf_thres, opt.nms_thres)
 
         # For each image in the batch process its detections
-        for i, (path, img0, dets_img) in enumerate(zip(paths, imgs0, dets)):
-            print("[%d/%d] Image: '%s'" % (batch_i * opt.batch_size + i + 1, len(dataset), path))
+        for i, (paths_i, imgs0_i, dets_i) in enumerate(zip(zip(*paths), zip(*imgs0), dets)):
+            print("[%d/%d] Image(s): '%s'" % (batch_i * opt.batch_size + i + 1, len(multidataset), ", ".join(paths_i)))
 
-            h, w = img0.shape[:2]
-            img0 = cv2.resize(img0, (int(w*opt.scale_factor), int(h*opt.scale_factor)), interpolation=cv2.INTER_AREA)
+            for j, path in enumerate(paths_i):
+                h, w = imgs0_i[j].shape[:2]
+                img0 = cv2.resize(imgs0_i[j],
+                                  (int(w*scale_factor[j]), int(h*scale_factor[j])),
+                                  interpolation=cv2.INTER_AREA)
 
-            # Draw bounding boxes and labels of detections
-            if dets_img is not None:
-                # Rescale boxes to original image
-                dets_img = rescale_boxes(dets_img, opt.img_size, img0.shape[:2])
-
-                n = len(dets_img)
-                print('Detections', end=': ')
                 # Draw bounding boxes and labels of detections
-                for k, (x1, y1, x2, y2, conf, cls_conf, cls) in enumerate(dets_img):
-                    # Add bbox to the image
-                    label = '%s (%.2f)' % (classes[int(cls)], conf)
-                    print('[%d/%d] %s' % (k+1, n, label), end=(', ' if k < len(dets_img) - 1 else '.\n'))
-                    plot_one_box(x1, y1, x2, y2, img0, label=label, color=colors[int(cls)])
+                if dets_i is not None:
+                    # Rescale boxes to original image
+                    dets_i_rsc_j = rescale_boxes(dets_i, opt.img_size, img0.shape[:2])
 
-            filename = path.split("/")[-1].split(".")[0]
-            cv2.imwrite(f"{opt.detection_images}/{filename}.jpg", img0)
+                    n = len(dets_i_rsc_j)
+                    if j < 1: print('Detections:', end=' ')
+                    # Draw bounding boxes and labels of detections
+                    for k, (x1, y1, x2, y2, conf, cls_conf, cls) in enumerate(dets_i_rsc_j):
+                        # Add bbox to the image
+                        label = '%s (%.2f)' % (classes[int(cls)], conf)
+                        if j < 1: print('[%d/%d] %s' % (k+1, n, label), end=(', ' if k < len(dets_i_rsc_j) - 1 else '.\n'))
+                        plot_one_box(x1, y1, x2, y2, img0, label=label, color=colors[int(cls)])
+
+                filename = paths_i[j].split("/")[-1].split(".")[0]
+                cv2.imwrite(f"{detection_output[j]}/{filename}.jpg", img0)
 
     print("Done. (%2.2f)" % (time.time() - st_time))
