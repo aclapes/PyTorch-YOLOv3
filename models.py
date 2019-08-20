@@ -471,6 +471,21 @@ class YOLOLayer(nn.Module):
 #     a = [module_def['type'] == 'yolo' for module_def in model.sx_module_defs['0']]
 #     return [i for i, x in enumerate(a) if x]  # [82, 94, 106] for yolov3
 
+def generate_2d_indices(rows, cols):
+    row_inds = np.repeat(np.arange(rows), cols)
+    col_inds = np.tile(np.arange(cols), rows)
+    return np.concatenate([row_inds[:, np.newaxis], col_inds[:, np.newaxis]], axis=1)
+
+def ndim_grid(start,stop):
+    # Set number of dimensions
+    ndims = len(start)
+
+    # List of ranges across all dimensions
+    L = [np.arange(start[i],stop[i]) for i in range(ndims)]
+
+    # Finally use meshgrid to form all combinations corresponding to all
+    # dimensions and stack them as M x ndims array
+    return np.hstack((np.meshgrid(*L))).swapaxes(0,1).reshape(ndims,-1).T
 
 def get_yolo_layers(model):
     '''
@@ -505,7 +520,7 @@ class Darknet(nn.Module):
         self.hyperparams = hyp
 
 
-    def forward(self, x0, targets=None):
+    def forward(self, x0, targets=None, return_maps=None):
         img_dim = max(x0[0].shape[-2:])
         loss = 0
         loss_items = None
@@ -515,9 +530,13 @@ class Darknet(nn.Module):
         x = {sx: (x0[i] if sx in self.hyperparams['streams'] else None)
              for i, sx in enumerate(self.sx_module_defs.keys())}
 
+        yolo_output_inds = []
+        maps = []
         for sx, defs_sx in self.sx_module_defs.items():
+
             modules_sx = self.sx_module_lists[sx]
             yolos[sx] = []
+
             for i, (module_def, module) in enumerate(zip(defs_sx, modules_sx)):
                 if module_def["type"] in ["convolutional", "upsample", "maxpool", "dropout", "bn", "activation", "rconvolutional"]:
                     x[sx] = module(x[sx])
@@ -534,15 +553,33 @@ class Darknet(nn.Module):
                             sx_i, lx_i = ((sx, int(r_spl[0])) if len(r_spl) == 1 else (r_spl[1], int(r_spl[0])))
                             layer_cat.append(layer_outputs[sx_i][lx_i])
                         x[sx] = torch.cat(layer_cat, 1)
+
                 elif module_def["type"] == "shortcut":
                     layer_i = int(module_def["from"])
                     x[sx] = layer_outputs[sx][-1] + layer_outputs[sx][layer_i]
+
                 elif module_def["type"] == "yolo":
+                    # keep cells info to backtrack detections
+                    n_anchors = len(module_def['mask'].split(','))
+                    x_rows, x_cols = x[sx].shape[-2:]
+                    cell_inds = ndim_grid([0, 0, 0], [n_anchors, x_rows, x_cols])
+                    yolo_idx = [len(yolos['0'])] * len(cell_inds)
+                    cell_inds = np.concatenate([np.array(yolo_idx)[:,np.newaxis], cell_inds], axis=1)
+                    yolo_output_inds += [np.repeat(cell_inds[np.newaxis, ...], x[sx].shape[0], axis=0)]
+
+                    # compute yolo layer output
                     x[sx], layer_loss, layer_loss_items = module[0](x[sx], targets, img_dim)
                     loss += layer_loss
                     loss_items = (layer_loss_items if loss_items is None else (loss_items + layer_loss_items))
                     yolos[sx].append(x[sx])
+
+                if sx in return_maps:
+                    if i in return_maps[sx]:
+                        maps += [x[sx]]
+
                 layer_outputs[sx].append(x[sx])
+
+        yolo_output_inds = torch.from_numpy(np.concatenate(yolo_output_inds, axis=1))
 
         yolo_outputs = []
         for _, yolos_sx in yolos.items():
@@ -554,7 +591,13 @@ class Darknet(nn.Module):
         # for sx, yolos_sx in yolos.items():
         #     yolo_outputs += [to_cpu(torch.cat(yolos_sx, 1))]
 
-        return yolo_outputs if targets is None else (loss, loss_items, yolo_outputs)
+        if targets is None:
+            if len(maps) == 0:
+                return yolo_outputs, yolo_output_inds
+            else:
+                return yolo_outputs, yolo_output_inds, [m.detach for m in maps]
+        else:
+            return loss, loss_items, yolo_outputs
 
     def load_darknet_weights(self, weights_path, k=0, cutoff=-1, initial_freeze=True):
         """Parses and loads the weights stored in 'weights_path'"""

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import cv2
 import torchvision.transforms
 
+import utils.calibration as calib
 from utils.preprocessing import image_normalization
 from utils.parse_config import parse_normalization
 from utils.augmentations import horisontal_flip, get_affine_transformation, apply_affine
@@ -47,28 +48,28 @@ class ImageFolder(Dataset):
         self.img_norm, self.img_norm_rng = parse_normalization(img_norm)
         self.color_map = int(color_map)
 
+    def load_image(self, img_path):
+        return cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+
+    def retrieve(self, index):
+        img_path = self.files[index % len(self.files)].rstrip()
+
+        img = self.load_image(img_path)
+
+        return img_path, img
+
     def __getitem__(self, index):
-        img_path = self.files[index % len(self.files)]
+        img_path, img = self.retrieve(index)
+        return (img_path,) + self.preprocess(img)
 
-        # Extract image as PyTorch tensor
-        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            return None
-
+    def preprocess(self, img, im0_contrast_rng=None):
         img0 = img.copy()
 
-        # if self.img_norm:
-        #     img = image_normalization(img, self.img_norm, self.img_norm_rng)
-        #
-        # if self.color_map:
-        #     img = cv2.applyColorMap(img.astype(np.uint8), colormap=cv2.COLORMAP_JET)
-        # else:
-        #     img = np.tile(img[:, :, np.newaxis], 3)
-
         if len(img.shape) != 3:
+            img0 = image_normalization(img0, self.img_norm, im0_contrast_rng)
             if self.img_norm:
                 img = image_normalization(img, self.img_norm, self.img_norm_rng)
-                img0 = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_32FC1)
+                # img0 = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_32FC1)
 
             img0 = np.tile(img0[:, :, np.newaxis], 3)
             if not self.color_map:
@@ -83,10 +84,13 @@ class ImageFolder(Dataset):
         img = np.ascontiguousarray(img, dtype=np.float32)  # uint8 to float32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
 
-        img = torch.from_numpy(img)
-        img = resize(img, self.img_size)
+        # img = resize(torch.from_numpy(img), self.img_size)
 
-        return img_path, img, img0
+        return img, img0
+
+    def get_contrast_range(self, img):
+        rng_min, rng_max, _, _ = cv2.minMaxLoc(img)
+        return max(rng_min, self.img_norm_rng[0]), min(rng_max, self.img_norm_rng[1])
 
     def __len__(self):
         return len(self.files)
@@ -96,14 +100,18 @@ class ImageFolder(Dataset):
         for path, img, img0 in batch:
             if img is not None:
                 paths.append(path)
-                imgs.append(resize(img, self.img_size))  # resize!
+                imgs.append(resize(torch.from_numpy(img), self.img_size))  # resize!
                 imgs0.append(img0)
 
         return paths, torch.stack(imgs), imgs0
 
 class ParallelImageFolder(Dataset):
-    def __init__(self, datasets, img_size=416):
+    def __init__(self, datasets, img_size=416, calib_file=None):
         self.datasets = datasets
+
+        self.calib_params = None
+        if calib_file:
+            self.calib_params = calib.read_calib2(calib_file)
 
         self.n = len(self.datasets[0])
 
@@ -119,12 +127,26 @@ class ParallelImageFolder(Dataset):
 
     def __getitem__(self, index):
         items = []
-        for dset in self.datasets:
-            item = dset[index]
-            if item is None: # error reading some dataset element
+        img_d = None
+        calib_d = None
+        for i, dset in enumerate(self.datasets):
+            img_path, img = dset.retrieve(index)
+            if img is None: # error reading some dataset element
                 return None
             else:
-                items += [item]
+                if self.calib_params is not None:
+                    img0_norm_rng = dset.get_contrast_range(img)
+                    calib_i = self.calib_params[i]
+                    if i == 0:
+                        img = calib.apply(img, calib_i["resize_dims"], calib_i["camera_matrix"], calib_i["dist_coeffs"])
+                        img_d = img
+                        calib_d = calib_i
+                    else:
+                        img = calib.apply(img, calib_i["resize_dims"], calib_i["camera_matrix"], calib_i["dist_coeffs"],
+                                          I_d=img_d, K_d=calib_d["camera_matrix"], scale_d=1.0000000474974513e-03,
+                                          R_to_d=calib_i["R"], t_to_d=calib_i["t"])
+
+                items += [(img_path,) + dset.preprocess(img, img0_norm_rng)]
 
         return items
 
@@ -135,6 +157,7 @@ class ParallelImageFolder(Dataset):
         collation = []
         for batch in batches:
             paths, imgs, imgs0 = list(zip(*batch))
+            imgs = [resize(torch.from_numpy(img), self.img_size) for img in imgs]
             collation += [(paths, torch.stack(imgs), np.array(imgs0))]
         return collation
 

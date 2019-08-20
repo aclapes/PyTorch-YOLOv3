@@ -281,6 +281,51 @@ def non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4):
 
     return output
 
+
+def non_max_suppression2(prediction, indices, conf_thres=0.5, nms_thres=0.4):
+    """
+    Removes detections with lower object confidence score than 'conf_thres' and performs
+    Non-Maximum Suppression to further filter detections.
+    Returns detections with shape:
+        (x1, y1, x2, y2, object_conf, class_score, class_pred)
+    """
+
+    # From (center x, center y, width, height) to (x1, y1, x2, y2)
+    prediction[..., :4] = xywh2xyxy(prediction[..., :4])
+    output = [None for _ in range(len(prediction))]
+    for image_i, (image_pred, inds_pred) in enumerate(zip(prediction, indices)):
+        # Filter out confidence scores below threshold
+        filter_mask = image_pred[:, 4] >= conf_thres
+        image_pred = image_pred[filter_mask]
+        # If none are remaining => process next image
+        if not image_pred.size(0):
+            continue
+        inds_pred = inds_pred[filter_mask]
+        # Object confidence times class confidence
+        score = image_pred[:, 4] * image_pred[:, 5:].max(1)[0]
+        # Sort by it
+        score_sort = (-score).argsort()
+        image_pred = image_pred[score_sort]
+        inds_pred = inds_pred[score_sort]
+        class_confs, class_preds = image_pred[:, 5:].max(1, keepdim=True)
+        detections = torch.cat((inds_pred.float(), image_pred[:, :5], class_confs.float(), class_preds.float()), 1)
+        # Perform non-maximum suppression
+        keep_boxes = []
+        while detections.size(0):
+            large_overlap = bbox_iou(detections[0, 4:8].unsqueeze(0), detections[:, 4:8]) > nms_thres
+            label_match = detections[0, -1] == detections[:, -1]
+            # Indices of boxes with lower confidence scores, large IOUs and matching labels
+            invalid = large_overlap & label_match
+            weights = detections[invalid, 8:9]
+            # Merge overlapping bboxes by order of confidence
+            detections[0, 4:8] = (weights * detections[invalid, 4:8]).sum(0) / weights.sum()
+            keep_boxes += [detections[0]]
+            detections = detections[~invalid]
+        if keep_boxes:
+            output[image_i] = torch.stack(keep_boxes)
+
+    return output
+
 # def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False):
 #     # Returns the IoU of box1 to box2. box1 is 4, box2 is nx4
 #     box2 = box2.t()
@@ -625,10 +670,10 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(nrows=2, ncols=5, figsize=(24, 12))
     ax = ax.flatten()
 
-    outputs = {'depth-!pre-!cmap': 'output-0/results.txt',
-               'depth-!pre-cmap': 'output-1/results.txt',
-               'depth-pre-!cmap': 'output-2/results.txt',
-               'depth-pre-cmap': 'output-3/results.txt'}
+    outputs = {'depth-floor-1-!pre-!cmap': 'output-0/results.txt',
+               'depth-floor-1-!pre-cmap': 'output-1/results.txt',
+               'depth-floor-1-pre-!cmap': 'output-2/results.txt',
+               'depth-floor-1-pre-cmap': 'output-3/results.txt'}
     # plt.subplot(2, 5, 1)
     plot_results(ax[0], outputs, ['val_precision']) #, save_to='results_precision_0-1-2-3.png')
     # plt.subplot(2, 5, 2)

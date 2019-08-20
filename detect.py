@@ -4,6 +4,7 @@ from models import *
 from utils.utils import *
 from utils.datasets import *
 from utils.parse_config import parse_data_config
+from utils.calibration import read_calib2
 
 import os
 import time
@@ -15,15 +16,16 @@ from torch.utils.data import DataLoader
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_image_folder", type=str, default="data/samples", help="path to dataset")
+    parser.add_argument("--calib_file", type=str, help="calibration intrinsic (or/and extrinsics)")
     parser.add_argument("--model_def", type=str, default="config/yolov3.cfg", help="path to model definition file")
     parser.add_argument("--weights_path", type=str, default="weights/yolov3.weights", help="path to weights file")
     parser.add_argument('--data_config', type=str, default='data/coco.data', help='coco.data file path')
     parser.add_argument("--conf_thres", type=float, default=0.5, help="object confidence threshold")
     parser.add_argument("--nms_thres", type=float, default=0.20, help="iou thresshold for non-maximum suppression")
     parser.add_argument("--batch_size", type=int, default=8, help="size of the batches")
-    parser.add_argument("--n_cpu", type=int, default=1, help="number of cpu threads to use during batch generation")
+    parser.add_argument("--n_cpu", type=int, default=8, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
-    parser.add_argument("--scale_factor", type=str, default="0.25,2", help="scale factor of images for visualization only")
+    parser.add_argument("--scale_factor", type=float, default=1.0, help="scale factor of images for visualization only")
     parser.add_argument("--detection_output", type=str, default="detection_images/", help="where to output detections")
     opt = parser.parse_args()
     print(opt)
@@ -56,7 +58,7 @@ if __name__ == "__main__":
     datasets = [ImageFolder(input, img_norm=cfg['normalization'], color_map=cfg['color_map'])
                 for input, cfg in zip(opt.input_image_folder.split(','), data_configs)]
 
-    multidataset = ParallelImageFolder(datasets, img_size=opt.img_size)
+    multidataset = ParallelImageFolder(datasets, img_size=opt.img_size, calib_file=opt.calib_file)
 
     dataloader = torch.utils.data.DataLoader(
         multidataset,
@@ -71,7 +73,8 @@ if __name__ == "__main__":
     for path in detection_output:
         os.makedirs(path, exist_ok=True)
 
-    scale_factor = [float(sf) for sf in opt.scale_factor.split(',')]
+    # scale_factor = [float(sf) for sf in opt.scale_factor.split(',')]
+    scale_factor = opt.scale_factor
 
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(classes))]
 
@@ -83,8 +86,10 @@ if __name__ == "__main__":
 
         # Get detections
         with torch.no_grad():
-            dets = model(input_tensor)
-            dets = non_max_suppression(dets, opt.conf_thres, opt.nms_thres)
+            dets, det_inds, maps = model(input_tensor, return_maps={'1':[12,15], '2':[12,15]})
+            dets = non_max_suppression2(dets, det_inds, opt.conf_thres, opt.nms_thres)
+
+        dets = [None if dets_i is None else dets_i[:,4:] for dets_i in dets]
 
         # For each image in the batch process its detections
         for i, (paths_i, imgs0_i, dets_i) in enumerate(zip(zip(*paths), zip(*imgs0), dets)):
@@ -93,7 +98,7 @@ if __name__ == "__main__":
             for j, path in enumerate(paths_i):
                 h, w = imgs0_i[j].shape[:2]
                 img0 = cv2.resize(imgs0_i[j],
-                                  (int(w*scale_factor[j]), int(h*scale_factor[j])),
+                                  (int(w*scale_factor), int(h*scale_factor)),
                                   interpolation=cv2.INTER_AREA)
 
                 # Draw bounding boxes and labels of detections
