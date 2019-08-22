@@ -91,16 +91,48 @@ def create_modules(hyperparams, sx_module_defs):
     """
     # hyperparams = module_defs.pop(0)
 
-    if not 'streams' in hyperparams:
-        hyperparams['streams'] = '0'
+    # Input streams can be specified in the model's cfg file, under variable "streams".
+    # If "streams" is a comma-separated list of stream names (p.e., "A,B" or "1,2"), it means there are multiple input
+    # streams. Then, "channels" also needs to be a list with the same number of elements specified by "streams", e.g.
+    # "3,3" if both streams are fed with 3-channel images.
+    # If "streams" is unspecified, the root stream (namely '0') will play the role of input stream.
+    if 'streams' in hyperparams:
+        # Streams specified in cfg? '0' SHOULD NOT BE THERE, '0' is where all streams eventually merge
+        hyperparams['streams'] = [sx for sx in hyperparams['streams'].split(',')]
+    else:
+        hyperparams['streams'] = ['0']  # no (input) streams in the cfg file, then '0' NEEDS TO BE THE INPUT
 
-    sx_output_filters = OrderedDict()
+    # assert number of streams and number of specified channels match
+    hyperparams['channels'] = [int(n) for n in hyperparams['channels'].split(',')]
+    assert len(hyperparams['streams']) == len(hyperparams['channels'])
+
+    # list the modules of the streams (sx_module_lists dict) and keep track of layers' input/output tensor dimensions
+    # (do not forget the special case of the input streams)
     sx_module_lists = OrderedDict()
-    for sx, _ in sx_module_defs.items():
-        sx_output_filters[sx] = [int(hyperparams['channels'])] if sx in hyperparams['streams'] else []  # TODO: make variable nb of channels in each stream
-        sx_module_lists[sx] = []
-    yolo_index = -1
+    sx_output_filters = OrderedDict()
 
+    # for sx, _ in sx_module_defs.items():
+    for sx in hyperparams['streams']:
+        # initialize an empty list of modules for this stream
+        sx_module_lists[sx] = []
+        # init the list of output number of filters (input streams start with number of channels)
+        # if sx in hyperparams['streams']:
+        nc_idx = hyperparams['streams'].index(sx)
+        sx_output_filters[sx] = [hyperparams['channels'][nc_idx]]
+        # else:
+        #     sx_output_filters[sx] = []
+
+    for sx, _ in sx_module_defs.items():
+        if not (sx in sx_module_lists):
+            sx_module_lists[sx] = []
+            sx_output_filters[sx] = []
+
+    # for convenience, hyperparams['streams'] will be noew appended with the non-input streams
+    # for sx, _ in sx_module_defs.items():
+    #     if not sx in hyperparams['streams']:
+    #         hyperparams['streams'] += [sx]
+
+    yolo_index = -1  # keep track of yolo layers' layer numbers
     for sx, module_defs in sx_module_defs.items():
         filters = None
 
@@ -157,8 +189,18 @@ def create_modules(hyperparams, sx_module_defs):
                     x_spl = x.strip().split('@')
                     layers.append((sx, int(x_spl[0])) if len(x_spl) == 1 else (x_spl[1], int(x_spl[0])))
 
-                filters = sum([sx_output_filters[sx_l][nl + 1 if nl > 0 else nl] for sx_l,nl in layers])
+                try:
+                    filters = sum([sx_output_filters[sx_l][nl + 1 if nl > 0 else nl] for sx_l,nl in layers])
+                except IndexError:
+                    pass
                 modules.add_module('route@%s_%d' % (sx, i), EmptyLayer())
+
+            # elif module_def['type'] == 'identity':
+            #     layer = module_def['layer'].strip()
+            #     layer_spl = layer.strip().split('@')
+            #     sx_l, nl = (sx, int(layer_spl[0])) if len(layer_spl) == 1 else (layer_spl[1], int(layer_spl[0]))
+            #     filters = sx_output_filters[sx_l][nl + 1 if nl > 0 else nl]
+            #     modules.add_module('identity@%s_%d' % (sx, i), EmptyLayer())
 
             elif module_def['type'] == 'dropout':
                 modules.add_module('dropout@%s_%d' % (sx, i), nn.Dropout(float(module_def['prob'])))
@@ -170,6 +212,12 @@ def create_modules(hyperparams, sx_module_defs):
             elif module_def['type'] == 'activation':
                 if module_def['function'] == 'leaky':
                     modules.add_module('leaky@%s_%d' % (sx, i), nn.LeakyReLU(0.1, inplace=True))
+                elif module_def['function'] == 'sigmoid':
+                    modules.add_module('sigmoid@%s_%d' % (sx, i), nn.Sigmoid())
+                elif module_def['function'] == 'linear' or module_def['function'] == '':
+                    pass
+                else:
+                    raise NotImplementedError
 
             elif module_def['type'] == 'bn':
                 modules.add_module('batch_norm@%s_%d' % (sx, i), nn.BatchNorm2d(sx_output_filters[sx][-1]))
@@ -349,7 +397,7 @@ class YOLOLayer(nn.Module):
 #     def __init__(self, config_path, img_size=416):
 #         super(Darknet, self).__init__()
 #         self.module_defs = parse_model_config(config_path)
-#         self.hyperparams, self.module_list = create_modules(self.module_defs)
+#         self.hyperparameters, self.module_list = create_modules(self.module_defs)
 #         self.yolo_layers = [layer[0] for layer in self.module_list if hasattr(layer[0], "metrics")]
 #         self.img_size = img_size
 #         self.seen = 0
@@ -471,11 +519,6 @@ class YOLOLayer(nn.Module):
 #     a = [module_def['type'] == 'yolo' for module_def in model.sx_module_defs['0']]
 #     return [i for i, x in enumerate(a) if x]  # [82, 94, 106] for yolov3
 
-def generate_2d_indices(rows, cols):
-    row_inds = np.repeat(np.arange(rows), cols)
-    col_inds = np.tile(np.arange(cols), rows)
-    return np.concatenate([row_inds[:, np.newaxis], col_inds[:, np.newaxis]], axis=1)
-
 def ndim_grid(start,stop):
     # Set number of dimensions
     ndims = len(start)
@@ -502,13 +545,29 @@ def get_yolo_layers(model):
 
     return yolo_indices
 
+class Fallnet(nn.Module):
+    def __init__(self, config_path):
+        super(Fallnet, self).__init__()
+        self.hyperparameters, self.sx_module_defs = parse_model_cfg(config_path)
+        self.sx_module_lists = create_modules(self.hyperparameters, self.sx_module_defs) # internally modifies hyperparameters dict
+        self.module_list = nn.ModuleList([m for _, sublist in self.sx_module_lists.items() for m in sublist])
+
+    def forward(self, x, targets=None, return_maps=None):
+        return x
+
 class Darknet(nn.Module):
     """YOLOv3 object detection model"""
 
     def __init__(self, config_path, img_size=416):
         super(Darknet, self).__init__()
-        hyp, self.sx_module_defs = parse_model_cfg(config_path)
-        self.sx_module_lists = create_modules(hyp, self.sx_module_defs) # pylist of pylists (not nn.ModuleList)
+
+        # hyp, self.sx_module_defs = parse_model_cfg(config_path)
+        # self.sx_module_lists = create_modules(hyp, self.sx_module_defs) # pylist of pylists (not nn.ModuleList)
+        # hyp['streams'] = hyp['streams'].split(',') if 'streams' in hyp else ['0']
+        # self.hyperparameters = hyp
+        self.hyperparameters, self.sx_module_defs = parse_model_cfg(config_path)
+        self.sx_module_lists = create_modules(self.hyperparameters, self.sx_module_defs) # internally modifies hyperparameters dict
+
         self.yolo_layers = get_yolo_layers(self)
         self.img_size = img_size  # not used?
         self.seen = 0
@@ -516,22 +575,26 @@ class Darknet(nn.Module):
         # create an actual nn.ModuleList (so it registers model parameters, so optimizer "sees" them)
         self.module_list = nn.ModuleList([m for _, sublist in self.sx_module_lists.items() for m in sublist])
 
-        hyp['streams'] = hyp['streams'].split(',') if 'streams' in hyp else ['0']
-        self.hyperparams = hyp
 
-
-    def forward(self, x0, targets=None, return_maps=None):
-        img_dim = max(x0[0].shape[-2:])
+    def forward(self, x0, targets=None, img_dim=None, return_maps=None):
+        if img_dim is None:
+            img_dim = max(x0[0].shape[-2:])
         loss = 0
         loss_items = None
         yolos = dict()
-        layer_outputs = {sx: [] for sx in self.sx_module_lists.keys()}
+        layer_outputs = {sx: [] for sx, _ in self.sx_module_lists.items()}
 
-        x = {sx: (x0[i] if sx in self.hyperparams['streams'] else None)
-             for i, sx in enumerate(self.sx_module_defs.keys())}
+        # x = {sx: (x0[i] if sx in self.hyperparameters['streams'] else None)
+        #      for i, (sx, _) in enumerate(self.sx_module_defs.items())}
+
+        x = {sx: (x0[i] if sx in self.hyperparameters['streams'] else None)
+             for i, (sx, _) in enumerate(self.sx_module_lists.items())}
+
+        layer_outputs = {sx: ([x0[i]] if sx in self.hyperparameters['streams'] else [])
+                         for i, (sx, _) in enumerate(self.sx_module_lists.items())}
 
         yolo_output_inds = []
-        maps = []
+        maps = dict()
         for sx, defs_sx in self.sx_module_defs.items():
 
             modules_sx = self.sx_module_lists[sx]
@@ -545,18 +608,18 @@ class Darknet(nn.Module):
                     if len(routes) == 1:
                         r_spl = routes[0].split('@')
                         sx_i, lx_i = (sx, int(r_spl[0])) if len(r_spl) == 1 else (r_spl[1], int(r_spl[0]))
-                        x[sx] = layer_outputs[sx_i][lx_i]
+                        x[sx] = layer_outputs[sx_i][lx_i+1 if lx_i > 0 else lx_i]
                     else:
                         layer_cat = []
                         for r in routes:
                             r_spl = r.split('@')
                             sx_i, lx_i = ((sx, int(r_spl[0])) if len(r_spl) == 1 else (r_spl[1], int(r_spl[0])))
-                            layer_cat.append(layer_outputs[sx_i][lx_i])
+                            layer_cat.append(layer_outputs[sx_i][lx_i+1 if lx_i > 0 else lx_i])
                         x[sx] = torch.cat(layer_cat, 1)
 
                 elif module_def["type"] == "shortcut":
-                    layer_i = int(module_def["from"])
-                    x[sx] = layer_outputs[sx][-1] + layer_outputs[sx][layer_i]
+                    lx_i = int(module_def["from"])
+                    x[sx] = layer_outputs[sx][-1] + layer_outputs[sx][[lx_i+1 if lx_i > 0 else lx_i]]
 
                 elif module_def["type"] == "yolo":
                     # keep cells info to backtrack detections
@@ -568,14 +631,26 @@ class Darknet(nn.Module):
                     yolo_output_inds += [np.repeat(cell_inds[np.newaxis, ...], x[sx].shape[0], axis=0)]
 
                     # compute yolo layer output
-                    x[sx], layer_loss, layer_loss_items = module[0](x[sx], targets, img_dim)
+                    try:
+                        x[sx], layer_loss, layer_loss_items = module[0](x[sx], targets, img_dim)
+                    except RuntimeError:
+                        pass
                     loss += layer_loss
                     loss_items = (layer_loss_items if loss_items is None else (loss_items + layer_loss_items))
                     yolos[sx].append(x[sx])
 
-                if sx in return_maps:
-                    if i in return_maps[sx]:
-                        maps += [x[sx]]
+                if return_maps and sx in return_maps:
+                    maps.setdefault(sx, [None] * len(return_maps[sx]))
+                    map_list = []
+                    for k, elem in enumerate(return_maps[sx]):
+                        if isinstance(elem, list) or isinstance(elem, tuple):
+                            if i in elem:
+                                if maps[sx][k] is None:
+                                    maps[sx][k] = []
+                                maps[sx][k].append(x[sx])
+                        elif elem == i:
+                            maps[sx][k] = [x[sx]]
+
 
                 layer_outputs[sx].append(x[sx])
 
@@ -586,7 +661,6 @@ class Darknet(nn.Module):
             # yolo_outputs += [torch.stack(yolos_sx).sum(dim=0) / len(yolos_sx)]
             yolo_outputs += yolos_sx
         yolo_outputs = to_cpu(torch.cat(yolo_outputs, 1))
-
         # yolo_outputs = []
         # for sx, yolos_sx in yolos.items():
         #     yolo_outputs += [to_cpu(torch.cat(yolos_sx, 1))]
@@ -595,7 +669,10 @@ class Darknet(nn.Module):
             if len(maps) == 0:
                 return yolo_outputs, yolo_output_inds
             else:
-                return yolo_outputs, yolo_output_inds, [m.detach for m in maps]
+                for sx, map_list_sx in maps.items():
+                    for i, map_list in enumerate(map_list_sx):
+                        map_list_sx[i] = torch.cat([m.detach() for m in map_list], 1)
+                return yolo_outputs, yolo_output_inds, maps
         else:
             return loss, loss_items, yolo_outputs
 
@@ -625,7 +702,7 @@ class Darknet(nn.Module):
         c = 0
         ptr = 0
 
-        sx = self.hyperparams['streams'][k]
+        sx = self.hyperparameters['streams'][k]
         defs_sx = self.sx_module_defs[sx]
         modules_sx = self.sx_module_lists[sx]
 

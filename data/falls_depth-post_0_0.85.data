@@ -1,0 +1,8 @@
+classes=2
+train=/data/falls_data_yolov3/train/rs/depth-10000_post/list-0.85.txt
+valid=/data/falls_data_yolov3/valid/rs/depth-10000_post/list-0.85.txt
+names=data/fall.names
+backup=backup/
+eval=coco
+normalization=minmax:0,10000
+color_map=0

@@ -40,8 +40,7 @@ def parse_model_cfg(path):
                 if module_type == 'convolutional' or module_type == 'rconvolutional':
                     module_defs[sx][-1]['batch_normalize'] = 0  # pre-populate with zeros (may be overwritten later)
         else:
-            key, value = line.split("=")
-            key, value = key.strip(), value.strip()
+            key, value = [x.strip() for x in line.split("=")]
             if len(module_defs) > 0:
                 module_defs[sx][-1][key] = value
             else:

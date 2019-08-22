@@ -86,10 +86,14 @@ if __name__ == "__main__":
 
         # Get detections
         with torch.no_grad():
-            dets, det_inds, maps = model(input_tensor, return_maps={'1':[12,15], '2':[12,15]})
-            dets = non_max_suppression2(dets, det_inds, opt.conf_thres, opt.nms_thres)
+            # dets_tmp, det_inds, maps = model(input_tensor, return_maps={'1': [(14,20), (12,29)], '2': [(14,20), (12,29)]})
+            # dets_tmp = non_max_suppression2(dets_tmp, det_inds, opt.conf_thres, opt.nms_thres)
 
-        dets = [None if dets_i is None else dets_i[:,4:] for dets_i in dets]
+            dets_tmp, _ = model(input_tensor)
+            dets = non_max_suppression(dets_tmp, opt.conf_thres, opt.nms_thres)
+
+        # coords = [None if dets_i is None else dets_i[:, :4] for dets_i in dets_tmp]
+        # dets = [None if dets_i is None else dets_i[:,4:] for dets_i in dets_tmp]
 
         # For each image in the batch process its detections
         for i, (paths_i, imgs0_i, dets_i) in enumerate(zip(zip(*paths), zip(*imgs0), dets)):

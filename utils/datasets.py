@@ -355,17 +355,21 @@ class ParallelListDataset(Dataset):
         Maff = None
         for dset in self.datasets:
             img_path, img, label_path = dset.retrieve(index)
-            if self.augment and Maff is None:
-                Maff = get_affine_transformation(img.shape,
-                                                 degrees=(-15, 15), #degrees=(-5, 5),
-                                                 translate=(0.50, 0.50),
-                                                 scale=(0.50, 1.50), #scale=(0.90, 1.10),
-                                                 border=0)
-            items += [(img_path,) + dset.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)]
+            if img is None:
+                return None
+            else:
+                if self.augment and Maff is None:
+                    Maff = get_affine_transformation(img.shape,
+                                                     degrees=(-15, 15), #degrees=(-5, 5),
+                                                     translate=(0.50, 0.50),
+                                                     scale=(0.50, 2.0), #scale=(0.90, 1.10),
+                                                     border=0)
+                items += [(img_path,) + dset.preprocess(img, label_path, Maff=Maff, flip_lr=flip_lr)]
 
         return items
 
     def collate_fn(self, batches):
+        batches = [batch for batch in batches if batch is not None]
         batches = list(zip(*batches))
         collation = []
         for batch in batches:
